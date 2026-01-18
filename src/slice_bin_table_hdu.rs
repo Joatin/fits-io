@@ -30,7 +30,9 @@ impl BinTableHDU for SliceBinTableHDU {
     }
 
     #[cfg(feature = "serde")]
-    fn read_rows<T: DeserializeOwned>(&self) -> Result<Vec<T>, Box<dyn Error + Send + Sync>> {
+    fn read_rows<T: DeserializeOwned + Send + Sync>(
+        &self,
+    ) -> Result<Vec<T>, Box<dyn Error + Send + Sync>> {
         todo!()
     }
 
@@ -43,7 +45,7 @@ impl BinTableHDU for SliceBinTableHDU {
 
     #[cfg(feature = "serde")]
     #[cfg(feature = "tokio")]
-    fn stream_table_rows<T: DeserializeOwned>(
+    fn stream_table_rows<T: DeserializeOwned + Send + Sync>(
         &self,
     ) -> Result<BoxStream<'_, T>, Box<dyn Error + Send + Sync>> {
         todo!()

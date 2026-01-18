@@ -59,7 +59,9 @@ impl BinTableHDU for FsBinTableHDU {
     }
 
     #[cfg(feature = "serde")]
-    fn read_rows<T: DeserializeOwned>(&self) -> Result<Vec<T>, Box<dyn Error + Send + Sync>> {
+    fn read_rows<T: DeserializeOwned + Send + Sync>(
+        &self,
+    ) -> Result<Vec<T>, Box<dyn Error + Send + Sync>> {
         let table = self.read_table()?;
         Ok(crate::bin_table::from_bin_table(&table)?)
     }
@@ -77,7 +79,7 @@ impl BinTableHDU for FsBinTableHDU {
 
     #[cfg(feature = "serde")]
     #[cfg(feature = "tokio")]
-    fn stream_table_rows<T: DeserializeOwned>(
+    fn stream_table_rows<T: DeserializeOwned + Send + Sync>(
         &self,
     ) -> Result<BoxStream<'_, T>, Box<dyn Error + Send + Sync>> {
         todo!()

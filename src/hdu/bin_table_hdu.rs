@@ -12,7 +12,9 @@ pub trait BinTableHDU: HDU + fmt::Debug + Send + Sync {
     fn read_table(&self) -> Result<BinTable, Box<dyn Error + Send + Sync>>;
 
     #[cfg(feature = "serde")]
-    fn read_rows<T: DeserializeOwned>(&self) -> Result<Vec<T>, Box<dyn Error + Send + Sync>>;
+    fn read_rows<T: DeserializeOwned + Send + Sync>(
+        &self,
+    ) -> Result<Vec<T>, Box<dyn Error + Send + Sync>>;
 
     #[cfg(feature = "tokio")]
     fn stream_table_rows_raw(
@@ -21,7 +23,7 @@ pub trait BinTableHDU: HDU + fmt::Debug + Send + Sync {
 
     #[cfg(feature = "serde")]
     #[cfg(feature = "tokio")]
-    fn stream_table_rows<T: DeserializeOwned>(
+    fn stream_table_rows<T: DeserializeOwned + Send + Sync>(
         &self,
     ) -> Result<futures::stream::BoxStream<'_, T>, Box<dyn Error + Send + Sync>>;
 }
