@@ -43,7 +43,7 @@ impl ImageHDU for SliceImageHDU {
         todo!()
     }
 
-    fn read_image(&self, index: usize) -> Result<Option<Image>, Box<dyn Error + Send + Sync>> {
+    fn read_image(&self, _index: usize) -> Result<Option<Image>, Box<dyn Error + Send + Sync>> {
         todo!()
     }
 
@@ -53,53 +53,53 @@ impl ImageHDU for SliceImageHDU {
 
     fn set_raw_images_u8(
         &mut self,
-        width: u32,
-        height: u32,
-        images: &[&[u8]],
+        _width: u32,
+        _height: u32,
+        _images: &[&[u8]],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         todo!()
     }
 
     fn set_raw_images_i16(
         &mut self,
-        width: u32,
-        height: u32,
-        images: &[&[i16]],
+        _width: u32,
+        _height: u32,
+        _images: &[&[i16]],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         todo!()
     }
 
     fn set_raw_images_i32(
         &mut self,
-        width: u32,
-        height: u32,
-        images: &[&[i32]],
+        _width: u32,
+        _height: u32,
+        _images: &[&[i32]],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         todo!()
     }
 
     fn set_raw_images_f32(
         &mut self,
-        width: u32,
-        height: u32,
-        images: &[&[f32]],
+        _width: u32,
+        _height: u32,
+        _images: &[&[f32]],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         todo!()
     }
 
     fn set_raw_images_f64(
         &mut self,
-        width: u32,
-        height: u32,
-        images: &[&[f64]],
+        _width: u32,
+        _height: u32,
+        _images: &[&[f64]],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         todo!()
     }
 
     fn stream_normalised_image(
         &self,
-        index: usize,
-    ) -> Result<Option<futures::stream::BoxStream<(u32, u32, f64)>>, Box<dyn Error + Send + Sync>>
+        _index: usize,
+    ) -> Result<Option<futures::stream::BoxStream<'_, (u32, u32, f64)>>, Box<dyn Error + Send + Sync>>
     {
         todo!()
     }

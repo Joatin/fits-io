@@ -2,10 +2,10 @@ use crate::bin_table::{BinTable, Value};
 use alloc::string::String;
 use alloc::string::ToString;
 use core::fmt::{Display, Formatter};
-use serde::ser::{Impossible, SerializeSeq};
+use serde::ser::Impossible;
 use serde::{Serialize, ser};
 use std::prelude::v1::Vec;
-use std::{dbg, println, vec};
+use std::{dbg, vec};
 
 #[derive(Debug, Clone)]
 struct Serializer {
@@ -21,14 +21,14 @@ pub enum Error {
 }
 
 impl Display for Error {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, _f: &mut Formatter<'_>) -> core::fmt::Result {
         todo!()
     }
 }
 
 impl core::error::Error for Error {}
 impl ser::Error for Error {
-    fn custom<T>(msg: T) -> Self
+    fn custom<T>(_msg: T) -> Self
     where
         T: Display,
     {
@@ -114,7 +114,7 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         Ok(Value::U32(vec![v]))
     }
 
-    fn serialize_u64(self, v: u64) -> Result<Self::Ok, Self::Error> {
+    fn serialize_u64(self, _v: u64) -> Result<Self::Ok, Self::Error> {
         Err(Error::NotSupported("u64"))
     }
 
@@ -240,7 +240,7 @@ impl<'a> ser::Serializer for &'a mut Serializer {
     // represent tuples more efficiently by omitting the length, since tuple
     // means that the corresponding `Deserialize implementation will know the
     // length without needing to look at the serialized data.
-    fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple, Self::Error> {
+    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, Self::Error> {
         Err(Error::Unknown)
     }
 
@@ -248,7 +248,7 @@ impl<'a> ser::Serializer for &'a mut Serializer {
     fn serialize_tuple_struct(
         self,
         _name: &'static str,
-        len: usize,
+        _len: usize,
     ) -> Result<Self::SerializeTupleStruct, Self::Error> {
         Err(Error::Unknown)
     }
@@ -259,7 +259,7 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         self,
         _name: &'static str,
         _variant_index: u32,
-        variant: &'static str,
+        _variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
         Err(Error::Unknown)
@@ -278,7 +278,7 @@ impl<'a> ser::Serializer for &'a mut Serializer {
     fn serialize_struct(
         self,
         _name: &'static str,
-        len: usize,
+        _len: usize,
     ) -> Result<Self::SerializeStruct, Self::Error> {
         Ok(self)
     }
@@ -289,7 +289,7 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         self,
         _name: &'static str,
         _variant_index: u32,
-        variant: &'static str,
+        _variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeStructVariant, Self::Error> {
         Err(Error::Unknown)

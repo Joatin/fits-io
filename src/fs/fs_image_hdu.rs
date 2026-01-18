@@ -3,7 +3,7 @@ use crate::hdu::{HDU, ImageHDU};
 use crate::header::{BayerPattern, Header, ImageType};
 use crate::image::Image;
 use crate::util::{read_bytes, read_bytes_async};
-use futures::{FutureExt, StreamExt};
+use futures::StreamExt;
 use std::error::Error;
 use std::io::{Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -115,45 +115,45 @@ impl ImageHDU for FsImageHDU {
 
     fn set_raw_images_u8(
         &mut self,
-        width: u32,
-        height: u32,
-        images: &[&[u8]],
+        _width: u32,
+        _height: u32,
+        _images: &[&[u8]],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         todo!()
     }
 
     fn set_raw_images_i16(
         &mut self,
-        width: u32,
-        height: u32,
-        images: &[&[i16]],
+        _width: u32,
+        _height: u32,
+        _images: &[&[i16]],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         todo!()
     }
 
     fn set_raw_images_i32(
         &mut self,
-        width: u32,
-        height: u32,
-        images: &[&[i32]],
+        _width: u32,
+        _height: u32,
+        _images: &[&[i32]],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         todo!()
     }
 
     fn set_raw_images_f32(
         &mut self,
-        width: u32,
-        height: u32,
-        images: &[&[f32]],
+        _width: u32,
+        _height: u32,
+        _images: &[&[f32]],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         todo!()
     }
 
     fn set_raw_images_f64(
         &mut self,
-        width: u32,
-        height: u32,
-        images: &[&[f64]],
+        _width: u32,
+        _height: u32,
+        _images: &[&[f64]],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         todo!()
     }
@@ -161,7 +161,7 @@ impl ImageHDU for FsImageHDU {
     fn stream_normalised_image(
         &self,
         index: usize,
-    ) -> Result<Option<futures::stream::BoxStream<(u32, u32, f64)>>, Box<dyn Error + Send + Sync>>
+    ) -> Result<Option<futures::stream::BoxStream<'_, (u32, u32, f64)>>, Box<dyn Error + Send + Sync>>
     {
         if !self.is_image_index_valid(index) {
             return Ok(None);
@@ -181,7 +181,7 @@ impl ImageHDU for FsImageHDU {
         Ok(Some(
             bytes
                 .enumerate()
-                .map(move |(index, byte)| {
+                .map(move |(index, _byte)| {
                     let x = index as u32 % width;
                     let y = index as u32 / width;
 

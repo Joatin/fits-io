@@ -9,6 +9,7 @@ extern crate alloc;
 
 pub mod ansi_table;
 pub mod bin_table;
+mod error;
 mod fits;
 mod fits_slice;
 #[cfg(feature = "fs")]
@@ -16,10 +17,13 @@ pub mod fs;
 pub mod hdu;
 pub mod header;
 pub mod image;
+mod result;
 mod slice_ascii_table_hdu;
 mod slice_bin_table_hdu;
 mod slice_image_hdu;
 mod util;
 
+pub use self::error::Error;
 pub use self::fits::Fits;
 pub use self::fits_slice::FitsSlice;
+pub use self::result::Result;

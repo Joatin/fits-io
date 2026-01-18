@@ -17,11 +17,11 @@ pub trait BinTableHDU: HDU + fmt::Debug + Send + Sync {
     #[cfg(feature = "tokio")]
     fn stream_table_rows_raw(
         &self,
-    ) -> Result<futures::stream::BoxStream<Row>, Box<dyn Error + Send + Sync>>;
+    ) -> Result<futures::stream::BoxStream<'_, Row<'_>>, Box<dyn Error + Send + Sync>>;
 
     #[cfg(feature = "serde")]
     #[cfg(feature = "tokio")]
     fn stream_table_rows<T: DeserializeOwned>(
         &self,
-    ) -> Result<futures::stream::BoxStream<T>, Box<dyn Error + Send + Sync>>;
+    ) -> Result<futures::stream::BoxStream<'_, T>, Box<dyn Error + Send + Sync>>;
 }

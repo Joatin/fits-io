@@ -25,12 +25,15 @@ pub enum TableColumnFormat {
 }
 
 impl TableColumnFormat {
-    pub fn parse_into_value(&self, data: &[u8]) -> Result<Value, Box<dyn Error + Sync + Send>> {
+    pub fn parse_into_value(&self, data: &[u8]) -> crate::Result<Value> {
         match self {
             TableColumnFormat::String(byte_count) => {
                 let end = *byte_count;
                 Ok(Value::String(
-                    from_utf8(&data[..end])?
+                    from_utf8(&data[..end])
+                        .map_err(|e| {
+                            crate::Error::DeserializationError(format!("Not valid UTF-8: {}", e))
+                        })?
                         .replace("\0", "")
                         .trim_ascii()
                         .to_string(),
@@ -41,11 +44,16 @@ impl TableColumnFormat {
                     .map(|index| {
                         let start = byte_count * index;
                         let end = start + byte_count;
-                        Ok::<_, Box<dyn Error + Sync + Send>>(
-                            from_utf8(&data[start..end])?.to_string(),
-                        )
+                        Ok(from_utf8(&data[start..end])
+                            .map_err(|e| {
+                                crate::Error::DeserializationError(format!(
+                                    "Not valid UTF-8: {}",
+                                    e
+                                ))
+                            })?
+                            .to_string())
                     })
-                    .collect::<Result<_, _>>()?,
+                    .collect::<crate::Result<_>>()?,
             )),
             TableColumnFormat::Boolean(item_count) => {
                 let end = item_count * 1;

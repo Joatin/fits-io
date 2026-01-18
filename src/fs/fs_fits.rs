@@ -12,7 +12,6 @@ use std::error::Error;
 use std::io::Seek;
 use std::path::{Path, PathBuf};
 use std::prelude::rust_2015::{Box, Vec};
-use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct FsFits {

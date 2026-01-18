@@ -1,5 +1,5 @@
 use alloc::string::String;
-use core::fmt::{Display, Formatter, write};
+use core::fmt::{Display, Formatter};
 use std::prelude::rust_2015::ToString;
 
 #[derive(Debug, Clone, Eq, PartialEq)]

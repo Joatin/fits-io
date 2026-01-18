@@ -1,7 +1,7 @@
 use crate::util::ReadSeek;
+use alloc::boxed::Box;
 use futures::stream::BoxStream;
-use futures::{Stream, StreamExt, stream};
-use std::prelude::rust_2015::{Box, Vec};
+use futures::{StreamExt, stream};
 use tokio::sync::mpsc::channel;
 use tokio_stream::wrappers::ReceiverStream;
 

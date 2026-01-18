@@ -90,7 +90,7 @@ pub trait ImageHDU: HDU + fmt::Debug + Send + Sync {
     fn stream_normalised_image(
         &self,
         index: usize,
-    ) -> Result<Option<futures::stream::BoxStream<(u32, u32, f64)>>, Box<dyn Error + Send + Sync>>;
+    ) -> Result<Option<futures::stream::BoxStream<'_, (u32, u32, f64)>>, Box<dyn Error + Send + Sync>>;
     fn image_data_size(&self) -> u64;
 }
 

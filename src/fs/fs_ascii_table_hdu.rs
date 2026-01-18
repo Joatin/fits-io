@@ -42,7 +42,7 @@ impl AsciiTableHDU for FsAsciiTableHDU {
         todo!()
     }
 
-    fn stream_table_rows(&self) -> Result<BoxStream<Row>, Box<dyn Error + Send + Sync>> {
+    fn stream_table_rows(&self) -> Result<BoxStream<'_, Row<'_>>, Box<dyn Error + Send + Sync>> {
         todo!()
     }
 }

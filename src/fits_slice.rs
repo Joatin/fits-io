@@ -19,7 +19,7 @@ pub struct FitsSlice {
 
 impl FitsSlice {
     /// Creates a new empty fits file
-    pub fn from_slice(data: &[u8]) -> Self {
+    pub fn from_slice(_data: &[u8]) -> Self {
         Self {
             primary_hdu: SliceImageHDU {},
             extension_hdus: vec![],

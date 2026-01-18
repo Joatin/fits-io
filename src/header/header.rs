@@ -1,7 +1,7 @@
 use crate::header::card::Card;
 use crate::header::extension_type::ExtensionType;
 use crate::header::value::Value;
-use crate::header::{BayerPattern, Bitpix, ImageType, TableColumnFormat, card_keys};
+use crate::header::{BayerPattern, Bitpix, ImageType, TableColumnFormat};
 use crate::util::ReadSeek;
 use alloc::boxed::Box;
 use alloc::vec::Vec;

@@ -1,15 +1,13 @@
 use crate::bin_table::value::Value;
 use crate::header::TableColumnFormat;
-use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::error::Error;
 
 /// A data row
 #[derive(Debug, Clone)]
 pub struct Row<'a> {
     data: &'a [u8],
-    field_definitions: &'a Vec<(TableColumnFormat, usize, String)>,
+    pub field_definitions: &'a Vec<(TableColumnFormat, usize, String)>,
 }
 
 impl<'a> Row<'a> {
@@ -23,7 +21,7 @@ impl<'a> Row<'a> {
         }
     }
 
-    pub fn get(&self, key: &str) -> Result<Option<Value>, Box<dyn Error + Sync + Send>> {
+    pub fn get(&self, key: &str) -> crate::Result<Option<Value>> {
         if let Some((format, offset, _)) = self.field_definitions.iter().find(|i| i.2.eq(key)) {
             Ok(Some(format.parse_into_value(&self.data[*offset..])?))
         } else {

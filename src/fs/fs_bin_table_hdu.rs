@@ -60,11 +60,18 @@ impl BinTableHDU for FsBinTableHDU {
 
     #[cfg(feature = "serde")]
     fn read_rows<T: DeserializeOwned>(&self) -> Result<Vec<T>, Box<dyn Error + Send + Sync>> {
-        todo!()
+        let table = self.read_table()?;
+        Ok(crate::bin_table::from_bin_table(&table)?)
     }
 
     #[cfg(feature = "tokio")]
-    fn stream_table_rows_raw(&self) -> Result<BoxStream<Row>, Box<dyn Error + Send + Sync>> {
+    fn stream_table_rows_raw(
+        &self,
+    ) -> Result<BoxStream<'_, Row<'_>>, Box<dyn Error + Send + Sync>> {
+        let mut reader = open_fits_file(&self.path)?;
+        reader.seek(SeekFrom::Start(
+            self.hdu_offset + self.header.bytes_len() as u64,
+        ))?;
         todo!()
     }
 
@@ -72,7 +79,7 @@ impl BinTableHDU for FsBinTableHDU {
     #[cfg(feature = "tokio")]
     fn stream_table_rows<T: DeserializeOwned>(
         &self,
-    ) -> Result<BoxStream<T>, Box<dyn Error + Send + Sync>> {
+    ) -> Result<BoxStream<'_, T>, Box<dyn Error + Send + Sync>> {
         todo!()
     }
 }

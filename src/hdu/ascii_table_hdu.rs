@@ -10,5 +10,5 @@ pub trait AsciiTableHDU: HDU + fmt::Debug + Send + Sync {
     #[cfg(feature = "tokio")]
     fn stream_table_rows(
         &self,
-    ) -> Result<futures::stream::BoxStream<Row>, Box<dyn Error + Send + Sync>>;
+    ) -> Result<futures::stream::BoxStream<'_, Row<'_>>, Box<dyn Error + Send + Sync>>;
 }

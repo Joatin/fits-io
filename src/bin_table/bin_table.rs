@@ -84,4 +84,8 @@ impl BinTable {
 
         Ok(field_definitions)
     }
+
+    pub fn len(&self) -> usize {
+        self.rows
+    }
 }

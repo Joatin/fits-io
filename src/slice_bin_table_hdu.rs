@@ -35,7 +35,9 @@ impl BinTableHDU for SliceBinTableHDU {
     }
 
     #[cfg(feature = "tokio")]
-    fn stream_table_rows_raw(&self) -> Result<BoxStream<Row>, Box<dyn Error + Send + Sync>> {
+    fn stream_table_rows_raw(
+        &self,
+    ) -> Result<BoxStream<'_, Row<'_>>, Box<dyn Error + Send + Sync>> {
         todo!()
     }
 
@@ -43,7 +45,7 @@ impl BinTableHDU for SliceBinTableHDU {
     #[cfg(feature = "tokio")]
     fn stream_table_rows<T: DeserializeOwned>(
         &self,
-    ) -> Result<BoxStream<T>, Box<dyn Error + Send + Sync>> {
+    ) -> Result<BoxStream<'_, T>, Box<dyn Error + Send + Sync>> {
         todo!()
     }
 }
