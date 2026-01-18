@@ -2,6 +2,8 @@ use crate::bin_table::Row;
 use crate::header::{Header, TableColumnFormat};
 use alloc::string::ToString;
 use alloc::vec;
+#[cfg(feature = "rayon")]
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::error::Error;
 use std::format;
 use std::prelude::rust_2015::{Box, String, Vec};
@@ -62,6 +64,13 @@ impl BinTable {
 
     pub fn rows(&'_ self) -> impl Iterator<Item = Row<'_>> + '_ {
         (0..(self.rows)).map(move |row| self.row(row).unwrap())
+    }
+
+    #[cfg(feature = "rayon")]
+    pub fn rows_parallel(&'_ self) -> impl ParallelIterator<Item = Row<'_>> + '_ {
+        (0..(self.rows))
+            .into_par_iter()
+            .filter_map(move |row| self.row(row))
     }
 
     fn get_table_column_formats(
