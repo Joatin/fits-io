@@ -1,13 +1,10 @@
 use crate::fits::Fits;
 use crate::hdu::ExtensionHDU;
 use crate::header::{BayerPattern, Bitpix};
-use crate::image::{Image, ImageData};
+use crate::image::{Image, ImageData, Normalizer};
 use crate::slice_ascii_table_hdu::SliceAsciiTableHDU;
 use crate::slice_bin_table_hdu::SliceBinTableHDU;
 use crate::slice_image_hdu::SliceImageHDU;
-use alloc::boxed::Box;
-use alloc::vec;
-use alloc::vec::Vec;
 use std::error::Error;
 
 /// A Fits file created from a buffer
@@ -66,6 +63,7 @@ impl FitsSlice {
     //     Ok(extension_hdus)
     // }
 
+    #[allow(clippy::too_many_arguments)]
     fn read_image(
         data: &[u8],
         offset: usize,
@@ -78,7 +76,22 @@ impl FitsSlice {
     ) -> Result<Image, Box<dyn Error + Send + Sync>> {
         let bytes = bitpix.byte_size() * width * height;
 
-        let data = &data[offset..(bytes + offset)];
+        let data = data
+            .get(offset..(bytes + offset))
+            .ok_or("Image data is too short for the dimensions the header declares")?;
+
+        // Floating point images have no representable range to normalise
+        // against, so they fall back to the extent of the data itself.
+        let normalizer = Normalizer::for_bitpix(bitpix, bzero, bscale).unwrap_or_else(|| {
+            Normalizer::from_samples(
+                bzero,
+                bscale,
+                data.as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|sample| f64::from_be_bytes(*sample)),
+            )
+        });
 
         match bitpix {
             Bitpix::F64 => {
@@ -91,8 +104,7 @@ impl FitsSlice {
                 Ok(Image::F64(ImageData::from_data(
                     width,
                     height,
-                    bzero,
-                    bscale,
+                    normalizer,
                     bayer_pattern,
                     data,
                 )?))
@@ -107,8 +119,7 @@ impl FitsSlice {
                 Ok(Image::F32(ImageData::from_data(
                     width,
                     height,
-                    bzero,
-                    bscale,
+                    normalizer,
                     bayer_pattern,
                     data,
                 )?))
@@ -118,8 +129,7 @@ impl FitsSlice {
                 Ok(Image::U8(ImageData::from_data(
                     width,
                     height,
-                    bzero,
-                    bscale,
+                    normalizer,
                     bayer_pattern,
                     data,
                 )?))
@@ -134,8 +144,7 @@ impl FitsSlice {
                 Ok(Image::I16(ImageData::from_data(
                     width,
                     height,
-                    bzero,
-                    bscale,
+                    normalizer,
                     bayer_pattern,
                     data,
                 )?))
@@ -150,8 +159,7 @@ impl FitsSlice {
                 Ok(Image::I32(ImageData::from_data(
                     width,
                     height,
-                    bzero,
-                    bscale,
+                    normalizer,
                     bayer_pattern,
                     data,
                 )?))
@@ -193,7 +201,7 @@ impl Fits for FitsSlice {
         self.extension_hdus.iter_mut()
     }
 
-    fn to_vec(&self) -> Vec<u8> {
-        todo!()
+    fn to_vec(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
+        Err("Writing FITS files is not implemented yet".into())
     }
 }

@@ -1,10 +1,7 @@
 use crate::header::{BayerPattern, Bitpix, Header};
-use crate::image::ImageData;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use core::error::Error;
-use image::{ImageBuffer, Luma, Rgb, RgbImage};
-use std::ops::Deref;
+use crate::image::{ImageData, Normalizer};
+use image::{ImageBuffer, Luma, Primitive, Rgb, RgbImage};
+use std::error::Error;
 
 #[derive(Debug, Clone)]
 pub enum Image {
@@ -50,10 +47,9 @@ impl Image {
     }
 
     /// Returns a normalised version of the image, where all values are converted into f64 in the range of 0.0 - 1.0
-    #[cfg(feature = "image")]
     pub fn normalized(&self) -> ImageBuffer<Luma<f64>, Vec<f64>> {
         match self {
-            Self::F64(image) => image.deref().clone(),
+            Self::F64(image) => image.normalized(),
             Self::F32(image) => image.normalized(),
             Self::I32(image) => image.normalized(),
             Self::I16(image) => image.normalized(),
@@ -62,7 +58,6 @@ impl Image {
     }
 
     /// Performs a superpixel demosaic and returns a normalised version. The superpixel algorithm is fast, but essentially cutting the resolution in half.
-    #[cfg(feature = "image")]
     pub fn normalized_superpixel(
         &self,
     ) -> Result<ImageBuffer<Rgb<f64>, Vec<f64>>, Box<dyn Error + Send + Sync>> {
@@ -76,7 +71,6 @@ impl Image {
     }
 
     /// Converts this image into a RgbImage from image-rs
-    #[cfg(feature = "image")]
     pub fn rgb_image(&self) -> Result<RgbImage, Box<dyn Error + Send + Sync>> {
         if self.bayer_pattern().is_some() {
             let normalized = self.normalized_superpixel()?;
@@ -109,25 +103,50 @@ impl Image {
         data: Vec<u8>,
         header: &Header,
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
-        let width = header.naxis_n(0).unwrap();
-        let height = header.naxis_n(1).unwrap();
-        let zero_offset = header.bzero().unwrap();
-        let scale = header.bscale().unwrap();
+        let bitpix = header
+            .bitpix()
+            .ok_or("Cannot read an image from a header without a BITPIX card")?;
+        let width = header
+            .naxis_n(0)
+            .ok_or("Cannot read an image from a header without a NAXIS1 card")?;
+        let height = header
+            .naxis_n(1)
+            .ok_or("Cannot read an image from a header without a NAXIS2 card")?;
+        let width = usize::try_from(width)
+            .map_err(|_| format!("NAXIS1 must not be negative, but was {}", width))?;
+        let height = usize::try_from(height)
+            .map_err(|_| format!("NAXIS2 must not be negative, but was {}", height))?;
+
         let bayer_pattern = header.bayer_pattern();
 
-        match header.bitpix() {
+        let expected = width
+            .checked_mul(height)
+            .and_then(|pixels| pixels.checked_mul(bitpix.byte_size()))
+            .ok_or("Image dimensions overflow the address space")?;
+        if data.len() < expected {
+            return Err(format!(
+                "Image data is too short, expected {} bytes for a {}x{} {:?} image, but got {}",
+                expected,
+                width,
+                height,
+                bitpix,
+                data.len()
+            )
+            .into());
+        }
+
+        match bitpix {
             Bitpix::F64 => {
                 let image_data = data
                     .as_chunks::<8>()
                     .0
-                    .into_iter()
+                    .iter()
                     .map(|i| f64::from_be_bytes(*i))
                     .collect::<Vec<_>>();
                 Ok(Image::F64(ImageData::<f64>::from_data(
-                    width as usize,
-                    height as usize,
-                    zero_offset,
-                    scale,
+                    width,
+                    height,
+                    normalizer_for(header, bitpix, &image_data),
                     bayer_pattern,
                     image_data,
                 )?))
@@ -136,23 +155,21 @@ impl Image {
                 let image_data = data
                     .as_chunks::<4>()
                     .0
-                    .into_iter()
+                    .iter()
                     .map(|i| f32::from_be_bytes(*i))
                     .collect::<Vec<_>>();
                 Ok(Image::F32(ImageData::<f32>::from_data(
-                    width as usize,
-                    height as usize,
-                    zero_offset,
-                    scale,
+                    width,
+                    height,
+                    normalizer_for(header, bitpix, &image_data),
                     bayer_pattern,
                     image_data,
                 )?))
             }
             Bitpix::U8 => Ok(Image::U8(ImageData::<u8>::from_data(
-                width as usize,
-                height as usize,
-                zero_offset,
-                scale,
+                width,
+                height,
+                normalizer_for(header, bitpix, &data),
                 bayer_pattern,
                 data,
             )?)),
@@ -160,14 +177,13 @@ impl Image {
                 let image_data = data
                     .as_chunks::<2>()
                     .0
-                    .into_iter()
+                    .iter()
                     .map(|i| i16::from_be_bytes(*i))
                     .collect::<Vec<_>>();
                 Ok(Image::I16(ImageData::<i16>::from_data(
-                    width as usize,
-                    height as usize,
-                    zero_offset,
-                    scale,
+                    width,
+                    height,
+                    normalizer_for(header, bitpix, &image_data),
                     bayer_pattern,
                     image_data,
                 )?))
@@ -176,14 +192,13 @@ impl Image {
                 let image_data = data
                     .as_chunks::<4>()
                     .0
-                    .into_iter()
+                    .iter()
                     .map(|i| i32::from_be_bytes(*i))
                     .collect::<Vec<_>>();
                 Ok(Image::I32(ImageData::<i32>::from_data(
-                    width as usize,
-                    height as usize,
-                    zero_offset,
-                    scale,
+                    width,
+                    height,
+                    normalizer_for(header, bitpix, &image_data),
                     bayer_pattern,
                     image_data,
                 )?))
@@ -192,7 +207,29 @@ impl Image {
     }
 }
 
-#[cfg(feature = "image")]
+/// Chooses the scaling for an image whose samples are already in memory.
+///
+/// Follows [`Normalizer::from_header`] — DATAMIN and DATAMAX first, then the
+/// representable range of BITPIX — but adds a fallback the streaming path cannot
+/// use: a floating point image has no representable range, and here the whole
+/// array is in hand, so its actual extent can be measured.
+fn normalizer_for<T: Primitive>(header: &Header, bitpix: Bitpix, data: &[T]) -> Normalizer {
+    let zero_offset = header.bzero_or_default();
+    let scale = header.bscale_or_default();
+
+    if let (Some(minimum), Some(maximum)) = (header.data_min(), header.data_max()) {
+        return Normalizer::new(zero_offset, scale, minimum, maximum);
+    }
+
+    Normalizer::for_bitpix(bitpix, zero_offset, scale).unwrap_or_else(|| {
+        Normalizer::from_samples(
+            zero_offset,
+            scale,
+            data.iter().filter_map(|sample| sample.to_f64()),
+        )
+    })
+}
+
 impl From<ImageBuffer<Luma<f64>, Vec<f64>>> for Image {
     fn from(image: ImageBuffer<Luma<f64>, Vec<f64>>) -> Self {
         Image::F64(ImageData::from_buffer(image))

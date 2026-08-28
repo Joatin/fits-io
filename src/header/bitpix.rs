@@ -1,6 +1,4 @@
-use alloc::boxed::Box;
-use alloc::format;
-use core::error::Error;
+use std::error::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Bitpix {
@@ -28,6 +26,40 @@ impl Bitpix {
             Bitpix::U8 => 1,
             Bitpix::I16 => 2,
             Bitpix::I32 => 4,
+        }
+    }
+}
+
+impl Bitpix {
+    /// Decodes one big-endian array value from the front of `bytes`, widening it
+    /// to `f64`.
+    ///
+    /// Returns `None` when `bytes` is shorter than [`Bitpix::byte_size`], so a
+    /// truncated data section produces a short read rather than a panic.
+    pub fn read_be(&self, bytes: &[u8]) -> Option<f64> {
+        fn take<const N: usize>(bytes: &[u8]) -> Option<[u8; N]> {
+            bytes.get(..N)?.try_into().ok()
+        }
+
+        match self {
+            Bitpix::F64 => Some(f64::from_be_bytes(take(bytes)?)),
+            Bitpix::F32 => Some(f32::from_be_bytes(take(bytes)?) as f64),
+            Bitpix::U8 => Some(*bytes.first()? as f64),
+            Bitpix::I16 => Some(i16::from_be_bytes(take(bytes)?) as f64),
+            Bitpix::I32 => Some(i32::from_be_bytes(take(bytes)?) as f64),
+        }
+    }
+
+    /// The inclusive range of values this type can represent, as `f64`.
+    ///
+    /// `None` for the floating point types, which have no meaningful full-scale
+    /// range to normalise against.
+    pub fn value_range(&self) -> Option<(f64, f64)> {
+        match self {
+            Bitpix::F64 | Bitpix::F32 => None,
+            Bitpix::U8 => Some((u8::MIN as f64, u8::MAX as f64)),
+            Bitpix::I16 => Some((i16::MIN as f64, i16::MAX as f64)),
+            Bitpix::I32 => Some((i32::MIN as f64, i32::MAX as f64)),
         }
     }
 }

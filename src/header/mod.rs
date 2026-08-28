@@ -9,7 +9,7 @@ mod image_type;
 mod table_column_format;
 mod value;
 
-pub use self::bayer_pattern::BayerPattern;
+pub use self::bayer_pattern::{BayerPattern, SuperpixelOffsets};
 pub use self::bitpix::Bitpix;
 pub use self::extension_type::ExtensionType;
 pub use self::header::Header;

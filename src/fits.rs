@@ -1,6 +1,6 @@
 use crate::hdu::{AsciiTableHDU, BinTableHDU, ExtensionHDU, ImageHDU};
-use alloc::vec::Vec;
-use core::fmt::Debug;
+use std::error::Error;
+use std::fmt::Debug;
 
 /// This is a representation of a FITS file (Flexible Image Transport System).
 pub trait Fits: Debug + Clone {
@@ -17,5 +17,9 @@ pub trait Fits: Debug + Clone {
     fn extension_hdus(&self) -> impl Iterator<Item = &ExtensionHDU<Self>>;
     fn extension_hdus_mut(&mut self) -> impl Iterator<Item = &mut ExtensionHDU<Self>>;
 
-    fn to_vec(&self) -> Vec<u8>;
+    /// Serialises this FITS file back into its on-disk byte representation.
+    ///
+    /// Writing is not implemented yet, so every backend currently returns an
+    /// error rather than a partial file.
+    fn to_vec(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>>;
 }

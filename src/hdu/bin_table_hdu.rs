@@ -1,10 +1,11 @@
-use crate::bin_table::{BinTable, Row};
+use crate::bin_table::BinTable;
+#[cfg(feature = "tokio")]
+use crate::bin_table::Row;
 use crate::hdu::HDU;
 #[cfg(feature = "serde")]
 use serde::de::DeserializeOwned;
 use std::error::Error;
 use std::fmt;
-use std::prelude::rust_2015::{Box, Vec};
 
 pub trait BinTableHDU: HDU + fmt::Debug + Send + Sync {
     fn table_data_bytes_len(&self) -> u64;

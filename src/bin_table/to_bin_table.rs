@@ -1,15 +1,15 @@
 use crate::bin_table::{BinTable, Value};
-use alloc::string::String;
-use alloc::string::ToString;
-use core::fmt::{Display, Formatter};
 use serde::ser::Impossible;
 use serde::{Serialize, ser};
+use std::fmt::{Display, Formatter};
 use std::prelude::v1::Vec;
-use std::{dbg, vec};
+use std::vec;
 
 #[derive(Debug, Clone)]
 struct Serializer {
     field_names: Vec<String>,
+    // Filled once table writing is implemented.
+    #[allow(dead_code)]
     rows: Vec<Vec<Value>>,
     current_row: Vec<Value>,
 }
@@ -18,21 +18,32 @@ struct Serializer {
 pub enum Error {
     Unknown,
     NotSupported(&'static str),
+    NotImplemented,
+    Custom(String),
 }
 
 impl Display for Error {
-    fn fmt(&self, _f: &mut Formatter<'_>) -> core::fmt::Result {
-        todo!()
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Unknown => write!(f, "Could not serialize this value into a binary table"),
+            Error::NotSupported(kind) => {
+                write!(f, "Binary tables do not support {} values", kind)
+            }
+            Error::NotImplemented => {
+                write!(f, "Writing binary tables is not implemented yet")
+            }
+            Error::Custom(message) => write!(f, "{}", message),
+        }
     }
 }
 
-impl core::error::Error for Error {}
+impl std::error::Error for Error {}
 impl ser::Error for Error {
-    fn custom<T>(_msg: T) -> Self
+    fn custom<T>(msg: T) -> Self
     where
         T: Display,
     {
-        todo!()
+        Error::Custom(msg.to_string())
     }
 }
 
@@ -45,11 +56,13 @@ pub fn to_bin_table<T: Serialize>(data: &T) -> Result<BinTable, Error> {
 
     data.serialize(&mut serializer)?;
 
-    std::dbg!(serializer);
-    Ok(BinTable::new(vec![]))
+    // The serializer collects field names and values but nothing assembles them
+    // into a table yet. Returning an empty BinTable here would silently discard
+    // the caller's data.
+    Err(Error::NotImplemented)
 }
 
-impl<'a> ser::Serializer for &'a mut Serializer {
+impl ser::Serializer for &mut Serializer {
     // The output type produced by this `Serializer` during successful
     // serialization. Most serializers that produce text or binary output should
     // set `Ok = ()` and serialize into an `io::Write` or buffer contained
@@ -303,7 +316,7 @@ impl<'a> ser::Serializer for &'a mut Serializer {
 //
 // This impl is SerializeSeq so these methods are called after `serialize_seq`
 // is called on the Serializer.
-impl<'a> ser::SerializeSeq for &'a mut Serializer {
+impl ser::SerializeSeq for &mut Serializer {
     // Must match the `Ok` type of the serializer.
     type Ok = Value;
     // Must match the `Error` type of the serializer.
@@ -444,7 +457,7 @@ impl<'a> ser::SerializeSeq for &'a mut Serializer {
 
 // Structs are like maps in which the keys are constrained to be compile-time
 // constant strings.
-impl<'a> ser::SerializeStruct for &'a mut Serializer {
+impl ser::SerializeStruct for &mut Serializer {
     type Ok = Value;
     type Error = Error;
 
@@ -453,7 +466,7 @@ impl<'a> ser::SerializeStruct for &'a mut Serializer {
         T: ?Sized + Serialize,
     {
         let value = value.serialize(&mut **self)?;
-        dbg!(value);
+        self.current_row.push(value);
         self.field_names.push(key.to_string());
         Ok(())
     }

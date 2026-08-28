@@ -3,15 +3,17 @@ use crate::header::extension_type::ExtensionType;
 use crate::header::value::Value;
 use crate::header::{BayerPattern, Bitpix, ImageType, TableColumnFormat};
 use crate::util::ReadSeek;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use chrono::{DateTime, Utc};
-use core::error::Error;
-use core::fmt::Formatter;
-use std::io::{Cursor, Read};
+use std::error::Error;
+use std::fmt::Formatter;
+use std::io::Read;
 use std::{fmt, vec};
 
 const CARD_NUM_BYTES: usize = 80;
+
+/// FITS files are laid out in blocks of this many bytes; headers and data
+/// sections are both padded up to a whole number of them.
+const BLOCK_NUM_BYTES: usize = 2880;
 
 #[derive(Clone, Default)]
 pub struct Header {
@@ -21,8 +23,8 @@ pub struct Header {
 impl Header {
     pub(crate) fn bytes_len(&self) -> usize {
         let num_bytes = self.cards.len() * CARD_NUM_BYTES;
-        let num_off_bytes = 2880 - (num_bytes % 2880);
-        if num_off_bytes == 2880 {
+        let num_off_bytes = BLOCK_NUM_BYTES - (num_bytes % BLOCK_NUM_BYTES);
+        if num_off_bytes == BLOCK_NUM_BYTES {
             num_bytes
         } else {
             num_bytes + num_off_bytes
@@ -39,17 +41,19 @@ impl Header {
         })
     }
 
-    pub fn bitpix(&self) -> Bitpix {
-        self.cards
-            .iter()
-            .find_map(|card| {
-                if let Card::Bitpix { value, .. } = card {
-                    Some(*value)
-                } else {
-                    None
-                }
-            })
-            .expect("BITPIX card is mandatory and should always be present in the header")
+    /// The BITPIX card.
+    ///
+    /// BITPIX is mandatory, so this returns `Some` for any header that passed
+    /// [`Header::validate_primary`] or [`Header::validate_extension`]. It returns
+    /// `None` for a header that was built by hand and left incomplete.
+    pub fn bitpix(&self) -> Option<Bitpix> {
+        self.cards.iter().find_map(|card| {
+            if let Card::Bitpix { value, .. } = card {
+                Some(*value)
+            } else {
+                None
+            }
+        })
     }
 
     pub fn blank(&self) -> Option<i64> {
@@ -82,6 +86,14 @@ impl Header {
         })
     }
 
+    /// BSCALE, defaulting to 1.0 when the card is absent.
+    ///
+    /// BSCALE is optional; the FITS standard defines its default as 1.0, so a
+    /// missing card means unscaled data rather than unknown data.
+    pub fn bscale_or_default(&self) -> f64 {
+        self.bscale().unwrap_or(1.0)
+    }
+
     pub fn bunit(&self) -> Option<&str> {
         self.cards.iter().find_map(|card| {
             if let Card::BUnit { value, .. } = card {
@@ -100,6 +112,14 @@ impl Header {
                 None
             }
         })
+    }
+
+    /// BZERO, defaulting to 0.0 when the card is absent.
+    ///
+    /// BZERO is optional; the FITS standard defines its default as 0.0, so a
+    /// missing card means unshifted data rather than unknown data.
+    pub fn bzero_or_default(&self) -> f64 {
+        self.bzero().unwrap_or(0.0)
     }
 
     pub fn data_max(&self) -> Option<f64> {
@@ -232,17 +252,19 @@ impl Header {
         })
     }
 
-    pub fn naxis(&self) -> i64 {
-        self.cards
-            .iter()
-            .find_map(|card| {
-                if let Card::NAxis { value, .. } = card {
-                    Some(*value)
-                } else {
-                    None
-                }
-            })
-            .expect("NAXIS card is mandatory and should always be present in the header")
+    /// The NAXIS card, i.e. the number of data axes.
+    ///
+    /// NAXIS is mandatory, so this returns `Some` for any header that passed
+    /// [`Header::validate_primary`] or [`Header::validate_extension`]. It returns
+    /// `None` for a header that was built by hand and left incomplete.
+    pub fn naxis(&self) -> Option<i64> {
+        self.cards.iter().find_map(|card| {
+            if let Card::NAxis { value, .. } = card {
+                Some(*value)
+            } else {
+                None
+            }
+        })
     }
 
     pub fn object(&self) -> Option<&str> {
@@ -355,7 +377,7 @@ impl Header {
         })
     }
 
-    pub fn exposure_time(&self) -> Option<core::time::Duration> {
+    pub fn exposure_time(&self) -> Option<std::time::Duration> {
         self.cards.iter().find_map(|card| {
             if let Card::ExposureTime { value, .. } = card {
                 Some(*value)
@@ -485,7 +507,7 @@ impl Header {
         })
     }
 
-    pub fn exposure(&self) -> Option<core::time::Duration> {
+    pub fn exposure(&self) -> Option<std::time::Duration> {
         self.cards.iter().find_map(|card| {
             if let Card::Exposure { value, .. } = card {
                 Some(*value)
@@ -580,10 +602,9 @@ impl Header {
             if let Card::CoordinateDeltaN {
                 value, index: idx, ..
             } = card
+                && index == *idx
             {
-                if index == *idx {
-                    return Some(*value);
-                }
+                return Some(*value);
             };
             None
         })
@@ -594,10 +615,9 @@ impl Header {
             if let Card::CoordinateRotationN {
                 value, index: idx, ..
             } = card
+                && index == *idx
             {
-                if index == *idx {
-                    return Some(*value);
-                }
+                return Some(*value);
             };
             None
         })
@@ -608,10 +628,9 @@ impl Header {
             if let Card::CoordinateReferencePixelN {
                 value, index: idx, ..
             } = card
+                && index == *idx
             {
-                if index == *idx {
-                    return Some(*value);
-                }
+                return Some(*value);
             };
             None
         })
@@ -622,10 +641,9 @@ impl Header {
             if let Card::CoordinateValueAtPixelN {
                 value, index: idx, ..
             } = card
+                && index == *idx
             {
-                if index == *idx {
-                    return Some(*value);
-                }
+                return Some(*value);
             };
             None
         })
@@ -636,10 +654,9 @@ impl Header {
             if let Card::CoordinateAxisNameN {
                 value, index: idx, ..
             } = card
+                && index == *idx
             {
-                if index == *idx {
-                    return Some(value.as_str());
-                }
+                return Some(value.as_str());
             };
             None
         })
@@ -650,10 +667,9 @@ impl Header {
             if let Card::NAxisN {
                 value, index: idx, ..
             } = card
+                && index == *idx
             {
-                if index == *idx {
-                    return Some(*value);
-                }
+                return Some(*value);
             };
             None
         })
@@ -664,10 +680,9 @@ impl Header {
             if let Card::ParameterScalingFactorN {
                 value, index: idx, ..
             } = card
+                && index == *idx
             {
-                if index == *idx {
-                    return Some(*value);
-                }
+                return Some(*value);
             };
             None
         })
@@ -678,10 +693,9 @@ impl Header {
             if let Card::ParameterTypeN {
                 value, index: idx, ..
             } = card
+                && index == *idx
             {
-                if index == *idx {
-                    return Some(value.as_str());
-                }
+                return Some(value.as_str());
             };
             None
         })
@@ -692,10 +706,9 @@ impl Header {
             if let Card::ParameterScalingZeroPointN {
                 value, index: idx, ..
             } = card
+                && index == *idx
             {
-                if index == *idx {
-                    return Some(*value);
-                }
+                return Some(*value);
             };
             None
         })
@@ -706,10 +719,9 @@ impl Header {
             if let Card::TableColumnN {
                 value, index: idx, ..
             } = card
+                && index == *idx
             {
-                if index == *idx {
-                    return Some(*value);
-                }
+                return Some(*value);
             };
             None
         })
@@ -720,10 +732,9 @@ impl Header {
             if let Card::TableDimensionsN {
                 value, index: idx, ..
             } = card
+                && index == *idx
             {
-                if index == *idx {
-                    return Some(value.as_str());
-                }
+                return Some(value.as_str());
             };
             None
         })
@@ -734,10 +745,9 @@ impl Header {
             if let Card::TableDisplayFormatN {
                 value, index: idx, ..
             } = card
+                && index == *idx
             {
-                if index == *idx {
-                    return Some(value.as_str());
-                }
+                return Some(value.as_str());
             };
             None
         })
@@ -748,10 +758,9 @@ impl Header {
             if let Card::TableNullValueN {
                 value, index: idx, ..
             } = card
+                && index == *idx
             {
-                if index == *idx {
-                    return Some(value.as_str());
-                }
+                return Some(value.as_str());
             };
             None
         })
@@ -762,10 +771,9 @@ impl Header {
             if let Card::TableScalingFactorN {
                 value, index: idx, ..
             } = card
+                && index == *idx
             {
-                if index == *idx {
-                    return Some(*value);
-                }
+                return Some(*value);
             };
             None
         })
@@ -776,10 +784,9 @@ impl Header {
             if let Card::TableTypeN {
                 value, index: idx, ..
             } = card
+                && index == *idx
             {
-                if index == *idx {
-                    return Some(value.as_str());
-                }
+                return Some(value.as_str());
             };
             None
         })
@@ -790,10 +797,9 @@ impl Header {
             if let Card::TableFormatN {
                 value, index: idx, ..
             } = card
+                && index == *idx
             {
-                if index == *idx {
-                    return Some(*value);
-                }
+                return Some(*value);
             };
             None
         })
@@ -804,10 +810,9 @@ impl Header {
             if let Card::TableUnitN {
                 value, index: idx, ..
             } = card
+                && index == *idx
             {
-                if index == *idx {
-                    return Some(value.as_str());
-                }
+                return Some(value.as_str());
             };
             None
         })
@@ -818,10 +823,9 @@ impl Header {
             if let Card::TableScalingZeroPointN {
                 value, index: idx, ..
             } = card
+                && index == *idx
             {
-                if index == *idx {
-                    return Some(*value);
-                }
+                return Some(*value);
             };
             None
         })
@@ -830,26 +834,44 @@ impl Header {
     pub(crate) fn data_block_len(&self) -> usize {
         let data_size = self.data_bytes_len();
 
-        let num_off_bytes = 2880 - (data_size % 2880);
-        if num_off_bytes == 2880 {
+        let num_off_bytes = BLOCK_NUM_BYTES - (data_size % BLOCK_NUM_BYTES);
+        if num_off_bytes == BLOCK_NUM_BYTES {
             data_size
         } else {
             data_size + num_off_bytes
         }
     }
 
+    /// Size of this HDU's data section in bytes, excluding block padding.
+    ///
+    /// Returns 0 for a header that declares no data, and also for an incomplete
+    /// header — a header missing BITPIX, NAXIS or one of its NAXISn cards cannot
+    /// describe a data section. [`Header::validate_primary`] and
+    /// [`Header::validate_extension`] reject such headers up front, so this
+    /// fallback is only reachable for hand-built headers.
     pub(crate) fn data_bytes_len(&self) -> usize {
-        let item_size = self.bitpix().byte_size();
-        let number_of_axis = self.naxis();
+        let (Some(bitpix), Some(number_of_axis)) = (self.bitpix(), self.naxis()) else {
+            return 0;
+        };
 
-        if number_of_axis == 0 {
+        if number_of_axis <= 0 {
             return 0;
         }
 
-        let mut bytes = item_size;
+        let mut bytes = bitpix.byte_size();
         for axis in 0..number_of_axis {
-            let axis = self.naxis_n((axis) as usize).unwrap() as usize;
-            bytes *= axis;
+            // NAXISn is untrusted input: a negative or absurd length must not
+            // overflow the running product.
+            let Some(length) = self.naxis_n(axis as usize) else {
+                return 0;
+            };
+            let Ok(length) = usize::try_from(length) else {
+                return 0;
+            };
+            let Some(product) = bytes.checked_mul(length) else {
+                return 0;
+            };
+            bytes = product;
         }
         bytes
     }
@@ -888,13 +910,63 @@ impl Header {
                 "This is not a valid fits file. It must contain card simple with value true".into(),
             );
         }
+        self.validate_structure("fits file")?;
 
         Ok(())
     }
 
     pub(crate) fn validate_extension(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        if self.extension_name().is_none() {
+        if self.extension().is_none() {
             return Err("This is not a valid fits extension. Card XTENSION is missing".into());
+        }
+        self.validate_structure("fits extension")?;
+
+        Ok(())
+    }
+
+    /// Checks the structural cards every HDU must carry: BITPIX, NAXIS and one
+    /// NAXISn per axis.
+    ///
+    /// Callers rely on this: once a header has been validated, [`Header::bitpix`],
+    /// [`Header::naxis`] and [`Header::naxis_n`] are known to return `Some`, and
+    /// [`Header::data_bytes_len`] is known to describe the real data section.
+    fn validate_structure(&self, kind: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if self.bitpix().is_none() {
+            return Err(format!("This is not a valid {}. Card BITPIX is missing", kind).into());
+        }
+
+        let Some(number_of_axis) = self.naxis() else {
+            return Err(format!("This is not a valid {}. Card NAXIS is missing", kind).into());
+        };
+
+        if number_of_axis < 0 {
+            return Err(format!(
+                "This is not a valid {}. Card NAXIS must not be negative, but was {}",
+                kind, number_of_axis
+            )
+            .into());
+        }
+
+        for axis in 0..number_of_axis {
+            let Some(length) = self.naxis_n(axis as usize) else {
+                return Err(format!(
+                    "This is not a valid {}. NAXIS is {} but card NAXIS{} is missing",
+                    kind,
+                    number_of_axis,
+                    axis + 1
+                )
+                .into());
+            };
+
+            if length < 0 {
+                return Err(format!(
+                    "This is not a valid {}. Card NAXIS{} must not be negative, but was {}",
+                    kind,
+                    axis + 1,
+                    length
+                )
+                .into());
+            }
         }
 
         Ok(())
@@ -903,43 +975,59 @@ impl Header {
     fn read_all_cards(
         reader: &mut Box<dyn ReadSeek>,
     ) -> Result<Vec<Card>, Box<dyn Error + Send + Sync>> {
-        let mut buffer = [0_u8; 2880 * 4];
+        let mut block = [0_u8; BLOCK_NUM_BYTES];
         let mut cards = vec![];
 
-        'outer: loop {
-            let bytes_read = reader.read(&mut buffer)?;
-            if bytes_read == 0 {
-                break;
-            }
-            let mut cursor = Cursor::new(&buffer[..bytes_read]);
-            while let Some(card) = Self::read_next_card(&mut cursor)? {
-                cards.push(card.clone());
-                if card == Card::End {
-                    break 'outer;
+        while Self::read_block(reader, &mut block)? {
+            for card in block.chunks_exact(CARD_NUM_BYTES) {
+                let card = Card::try_from(
+                    <&[u8; CARD_NUM_BYTES]>::try_from(card).expect("chunks_exact yields 80 bytes"),
+                )?;
+
+                let is_end = card == Card::End;
+                cards.push(card);
+
+                // Everything after END is padding.
+                if is_end {
+                    return Ok(cards);
                 }
             }
         }
+
         Ok(cards)
     }
 
-    fn read_next_card(
-        reader: &mut Cursor<&[u8]>,
-    ) -> Result<Option<Card>, Box<dyn Error + Send + Sync>> {
-        let mut buf = [0_u8; 80];
-        let read_bytes = reader.read(&mut buf)?;
+    /// Fills `block` with exactly one 2880-byte FITS block.
+    ///
+    /// Returns `false` at a clean end of file. `Read::read` is free to return
+    /// fewer bytes than asked for even mid-file, so the read is repeated until
+    /// the block is full; stopping early would misalign every following card.
+    fn read_block(
+        reader: &mut Box<dyn ReadSeek>,
+        block: &mut [u8; BLOCK_NUM_BYTES],
+    ) -> Result<bool, Box<dyn Error + Send + Sync>> {
+        let mut filled = 0;
 
-        if read_bytes == 0 {
-            return Ok(None);
+        while filled < BLOCK_NUM_BYTES {
+            match reader.read(&mut block[filled..])? {
+                0 if filled == 0 => return Ok(false),
+                0 => {
+                    return Err(format!(
+                        "Truncated FITS header: a block is {} bytes but only {} were left",
+                        BLOCK_NUM_BYTES, filled
+                    )
+                    .into());
+                }
+                bytes => filled += bytes,
+            }
         }
 
-        let card = Card::try_from(&buf)?;
-
-        Ok(Some(card))
+        Ok(true)
     }
 }
 
 impl fmt::Debug for Header {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
             "Flexible Image Transport System (FITS) Data Unit Header:"

@@ -1,10 +1,9 @@
-use alloc::string::String;
-use alloc::vec::Vec;
 #[derive(Debug, Clone)]
 pub enum Value {
     String(String),
     StringArray(Vec<String>),
     Boolean(Vec<bool>),
+    /// `rX`: `r` bits, still packed into `ceil(r / 8)` bytes.
     Bit(Vec<u8>),
     U8(Vec<u8>),
     I8(Vec<i8>),
@@ -15,8 +14,10 @@ pub enum Value {
     I64(Vec<i64>),
     F32(Vec<f32>),
     F64(Vec<f64>),
-    C32(Vec<i32>),
-    M64(Vec<i64>),
+    /// `rC`: single precision complex values, as `(real, imaginary)` pairs.
+    C32(Vec<(f32, f32)>),
+    /// `rM`: double precision complex values, as `(real, imaginary)` pairs.
+    M64(Vec<(f64, f64)>),
 }
 
 impl Value {

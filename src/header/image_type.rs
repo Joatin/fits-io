@@ -1,6 +1,4 @@
-use alloc::string::String;
-use core::fmt::{Display, Formatter};
-use std::prelude::rust_2015::ToString;
+use std::fmt::{Display, Formatter};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ImageType {
@@ -42,7 +40,7 @@ impl From<&str> for ImageType {
 }
 
 impl Display for ImageType {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             ImageType::Light => write!(f, "Light"),
             ImageType::Bias => write!(f, "Bias"),

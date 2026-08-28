@@ -1,8 +1,9 @@
+#[cfg(feature = "tokio")]
+use crate::hdu::NormalisedImageStream;
 use crate::hdu::{HDU, ImageHDU};
 use crate::header::{BayerPattern, Header, ImageType};
 use crate::image::Image;
 use std::error::Error;
-use std::prelude::rust_2015::Box;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -96,11 +97,11 @@ impl ImageHDU for SliceImageHDU {
         todo!()
     }
 
+    #[cfg(feature = "tokio")]
     fn stream_normalised_image(
         &self,
         _index: usize,
-    ) -> Result<Option<futures::stream::BoxStream<'_, (u32, u32, f64)>>, Box<dyn Error + Send + Sync>>
-    {
+    ) -> Result<Option<NormalisedImageStream<'_>>, Box<dyn Error + Send + Sync>> {
         todo!()
     }
 

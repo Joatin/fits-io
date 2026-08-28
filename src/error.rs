@@ -1,6 +1,5 @@
-use alloc::string::String;
-use alloc::string::ToString;
-use core::fmt::Display;
+#[cfg(feature = "serde")]
+use std::fmt::Display;
 use thiserror::Error;
 
 #[derive(Debug, Error)]

@@ -1,7 +1,4 @@
 use crate::header::card::Card;
-use alloc::string::String;
-use std::format;
-use std::prelude::rust_2015::ToString;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {

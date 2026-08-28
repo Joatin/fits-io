@@ -1,11 +1,13 @@
-use crate::bin_table::{BinTable, Row};
+use crate::bin_table::BinTable;
+#[cfg(feature = "tokio")]
+use crate::bin_table::Row;
 use crate::hdu::{BinTableHDU, HDU};
 use crate::header::Header;
+#[cfg(feature = "tokio")]
 use futures::stream::BoxStream;
 #[cfg(feature = "serde")]
 use serde::de::DeserializeOwned;
 use std::error::Error;
-use std::prelude::rust_2015::{Box, Vec};
 
 #[derive(Debug, Clone)]
 pub struct SliceBinTableHDU {}

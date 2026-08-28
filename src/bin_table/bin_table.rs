@@ -1,23 +1,22 @@
 use crate::bin_table::Row;
 use crate::header::{Header, TableColumnFormat};
-use alloc::string::ToString;
-use alloc::vec;
 #[cfg(feature = "rayon")]
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::error::Error;
-use std::format;
-use std::prelude::rust_2015::{Box, String, Vec};
+
+/// One column's format, its byte offset in the row, and its TTYPEn name.
+pub type FieldDefinition = (TableColumnFormat, usize, String);
 
 #[derive(Debug, Clone, Default)]
 pub struct BinTable {
     data: Vec<u8>,
-    field_definitions: Vec<(TableColumnFormat, usize, String)>,
+    field_definitions: Vec<FieldDefinition>,
     rows: usize,
     bytes_per_row: usize,
 }
 
 impl BinTable {
-    pub fn new(field_definitions: Vec<(TableColumnFormat, usize, String)>) -> Self {
+    pub fn new(field_definitions: Vec<FieldDefinition>) -> Self {
         Self {
             data: vec![],
             field_definitions,
@@ -27,20 +26,31 @@ impl BinTable {
     }
 
     pub fn from_u8(header: &Header, data: Vec<u8>) -> Result<Self, Box<dyn Error + Send + Sync>> {
-        if header.naxis() == 2 {
-            let bytes_per_row = header.naxis_n(0).unwrap() as usize;
-            let rows = header.naxis_n(1).unwrap() as usize;
+        if header.naxis() == Some(2) {
+            let bytes_per_row = header
+                .naxis_n(0)
+                .ok_or("Table header is missing its NAXIS1 card")?;
+            let rows = header
+                .naxis_n(1)
+                .ok_or("Table header is missing its NAXIS2 card")?;
+            let bytes_per_row = usize::try_from(bytes_per_row)
+                .map_err(|_| format!("NAXIS1 must not be negative, but was {}", bytes_per_row))?;
+            let rows = usize::try_from(rows)
+                .map_err(|_| format!("NAXIS2 must not be negative, but was {}", rows))?;
 
-            if data.len() < rows * bytes_per_row {
+            let expected = rows
+                .checked_mul(bytes_per_row)
+                .ok_or("Table dimensions overflow the address space")?;
+            if data.len() < expected {
                 return Err(format!(
                     "Data vec is too short, expected {} bytes, but data was only {} bytes long",
-                    rows * bytes_per_row,
+                    expected,
                     data.len()
                 )
                 .into());
             }
 
-            let field_definitions = Self::get_table_column_formats(&header)?;
+            let field_definitions = Self::get_table_column_formats(header)?;
             Ok(Self {
                 data,
                 field_definitions,
@@ -63,7 +73,7 @@ impl BinTable {
     }
 
     pub fn rows(&'_ self) -> impl Iterator<Item = Row<'_>> + '_ {
-        (0..(self.rows)).map(move |row| self.row(row).unwrap())
+        (0..(self.rows)).filter_map(move |row| self.row(row))
     }
 
     #[cfg(feature = "rayon")]
@@ -75,14 +85,25 @@ impl BinTable {
 
     fn get_table_column_formats(
         header: &Header,
-    ) -> Result<Vec<(TableColumnFormat, usize, String)>, Box<dyn Error + Send + Sync>> {
-        let table_fields = header.table_fields().unwrap() as usize;
+    ) -> Result<Vec<FieldDefinition>, Box<dyn Error + Send + Sync>> {
+        let table_fields = header
+            .table_fields()
+            .ok_or("Table header is missing its TFIELDS card")?;
+        let table_fields = usize::try_from(table_fields)
+            .map_err(|_| format!("TFIELDS must not be negative, but was {}", table_fields))?;
         let mut field_offset = 0;
 
         let field_definitions: Vec<_> = (0..table_fields)
             .map(|index| {
-                let field_form = header.table_column_format(index).unwrap();
-                let field_type = header.table_column_type(index).unwrap();
+                // TFORMn is mandatory: without it the column width, and therefore
+                // every following column offset, is unknown.
+                let field_form = header.table_column_format(index).ok_or_else(|| {
+                    format!("Table header is missing its TFORM{} card", index + 1)
+                })?;
+
+                // TTYPEn is optional. An unnamed column still occupies its bytes,
+                // it just cannot be looked up by name.
+                let field_type = header.table_column_type(index).unwrap_or_default();
 
                 let offset = field_offset;
                 field_offset += field_form.bytes_len();
@@ -94,7 +115,12 @@ impl BinTable {
         Ok(field_definitions)
     }
 
+    /// The number of rows in this table.
     pub fn len(&self) -> usize {
         self.rows
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rows == 0
     }
 }

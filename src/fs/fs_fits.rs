@@ -6,12 +6,10 @@ use crate::fs::is_fits_file;
 use crate::fs::open_fits_file::open_fits_file;
 use crate::hdu::{ExtensionHDU, HDU};
 use crate::header::{ExtensionType, Header};
-use alloc::vec;
 use log::{debug, info};
 use std::error::Error;
 use std::io::Seek;
 use std::path::{Path, PathBuf};
-use std::prelude::rust_2015::{Box, Vec};
 
 #[derive(Debug, Clone)]
 pub struct FsFits {
@@ -27,8 +25,8 @@ impl FsFits {
         debug!("Opening FITS file: {:?}", path);
         let mut reader = open_fits_file(path)?;
 
-        let header = Header::from_reader(&mut reader)?
-            .ok_or_else(|| "Could not read primary FITS header")?;
+        let header =
+            Header::from_reader(&mut reader)?.ok_or("Could not read primary FITS header")?;
         debug!("Opened primary header: {:?}", header);
         header.validate_primary()?;
 
@@ -44,7 +42,11 @@ impl FsFits {
                 header.validate_extension()?;
                 debug!("Found extension header: {:?}", header);
 
-                match header.extension().unwrap() {
+                let extension_type = header.extension().ok_or(
+                    "This is not a valid fits extension. Card XTENSION is missing or invalid",
+                )?;
+
+                match extension_type {
                     ExtensionType::Image => {
                         let extension_hdu = FsImageHDU::new_extension(path, header, offset)?;
                         offset += extension_hdu.byte_size();
@@ -88,8 +90,11 @@ impl FsFits {
         }
     }
 
-    pub fn save(&self) -> () {
-        todo!();
+    /// Writes this FITS file back to [`FsFits::path`].
+    ///
+    /// Writing is not implemented yet.
+    pub fn save(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        Err("Writing FITS files is not implemented yet".into())
     }
 
     /// Retrieves the path this FITS file belongs to
@@ -139,7 +144,7 @@ impl Fits for FsFits {
         self.extension_hdus.iter_mut()
     }
 
-    fn to_vec(&self) -> Vec<u8> {
-        todo!()
+    fn to_vec(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
+        Err("Writing FITS files is not implemented yet".into())
     }
 }

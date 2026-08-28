@@ -1,15 +1,17 @@
-use crate::bin_table::{BinTable, Row};
+use crate::bin_table::BinTable;
+#[cfg(feature = "tokio")]
+use crate::bin_table::Row;
 use crate::fs::open_fits_file::open_fits_file;
 use crate::hdu::{BinTableHDU, HDU};
 use crate::header::Header;
 use crate::util::read_bytes;
+#[cfg(feature = "tokio")]
 use futures::stream::BoxStream;
 #[cfg(feature = "serde")]
 use serde::de::DeserializeOwned;
 use std::error::Error;
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
-use std::prelude::rust_2015::{Box, Vec};
 
 #[derive(Debug, Clone)]
 pub struct FsBinTableHDU {
@@ -43,8 +45,20 @@ impl HDU for FsBinTableHDU {
 }
 
 impl BinTableHDU for FsBinTableHDU {
+    /// Size of the table data section in bytes: NAXIS1 (row length) x NAXIS2 (row count).
+    ///
+    /// Returns 0 for a header that does not declare both, which describes an
+    /// empty table rather than an unreadable one.
     fn table_data_bytes_len(&self) -> u64 {
-        (self.header.naxis_n(0).unwrap() * self.header.naxis_n(1).unwrap()) as u64
+        let (Some(bytes_per_row), Some(rows)) = (self.header.naxis_n(0), self.header.naxis_n(1))
+        else {
+            return 0;
+        };
+
+        let bytes_per_row = bytes_per_row.max(0) as u64;
+        let rows = rows.max(0) as u64;
+
+        bytes_per_row.saturating_mul(rows)
     }
 
     fn read_table(&self) -> Result<BinTable, Box<dyn Error + Send + Sync>> {
@@ -53,7 +67,7 @@ impl BinTableHDU for FsBinTableHDU {
             self.hdu_offset + self.header.bytes_len() as u64,
         ))?;
 
-        let bytes = read_bytes(&mut reader, self.table_data_bytes_len());
+        let bytes = read_bytes(&mut reader, self.table_data_bytes_len())?;
 
         BinTable::from_u8(&self.header, bytes)
     }
@@ -74,7 +88,7 @@ impl BinTableHDU for FsBinTableHDU {
         reader.seek(SeekFrom::Start(
             self.hdu_offset + self.header.bytes_len() as u64,
         ))?;
-        todo!()
+        Err("Streaming binary table rows is not implemented yet".into())
     }
 
     #[cfg(feature = "serde")]
@@ -82,6 +96,6 @@ impl BinTableHDU for FsBinTableHDU {
     fn stream_table_rows<T: DeserializeOwned + Send + Sync>(
         &self,
     ) -> Result<BoxStream<'_, T>, Box<dyn Error + Send + Sync>> {
-        todo!()
+        Err("Streaming binary table rows is not implemented yet".into())
     }
 }

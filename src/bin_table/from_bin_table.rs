@@ -1,6 +1,5 @@
 use crate::bin_table::BinTable;
 use crate::bin_table::from_bin_table_row::from_bin_table_row;
-use alloc::vec::Vec;
 #[cfg(feature = "rayon")]
 use rayon::iter::ParallelIterator;
 use serde::de::DeserializeOwned;

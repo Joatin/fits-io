@@ -1,12 +1,13 @@
 use crate::hdu::hdu::HDU;
 use crate::header::{BayerPattern, ImageType};
 use crate::image::Image;
-use alloc::boxed::Box;
-#[cfg(feature = "image")]
 use image::{ImageBuffer, Luma, Primitive};
 use std::error::Error;
 use std::fmt;
-use std::prelude::rust_2015::Vec;
+
+/// A stream of `(x, y, value)` triples, with `value` normalised to `0.0..=1.0`.
+#[cfg(feature = "tokio")]
+pub type NormalisedImageStream<'a> = futures::stream::BoxStream<'a, (u32, u32, f64)>;
 
 pub trait ImageHDU: HDU + fmt::Debug + Send + Sync {
     fn image_count(&self) -> usize;
@@ -14,38 +15,33 @@ pub trait ImageHDU: HDU + fmt::Debug + Send + Sync {
     fn images_height(&self) -> u32;
     fn images_bayer_pattern(&self) -> Option<BayerPattern>;
     fn images_type(&self) -> Option<&ImageType>;
-    fn images_exposure_time(&self) -> Option<core::time::Duration>;
+    fn images_exposure_time(&self) -> Option<std::time::Duration>;
     fn read_image(&self, index: usize) -> Result<Option<Image>, Box<dyn Error + Send + Sync>>;
 
-    #[cfg(feature = "image")]
     fn set_images_u8(
         &mut self,
         images: &[&ImageBuffer<Luma<u8>, Vec<u8>>],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         get_raw_data_from_image(self, images, Self::set_raw_images_u8)
     }
-    #[cfg(feature = "image")]
     fn set_images_i16(
         &mut self,
         images: &[&ImageBuffer<Luma<i16>, Vec<i16>>],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         get_raw_data_from_image(self, images, Self::set_raw_images_i16)
     }
-    #[cfg(feature = "image")]
     fn set_images_i32(
         &mut self,
         images: &[&ImageBuffer<Luma<i32>, Vec<i32>>],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         get_raw_data_from_image(self, images, Self::set_raw_images_i32)
     }
-    #[cfg(feature = "image")]
     fn set_images_f32(
         &mut self,
         images: &[&ImageBuffer<Luma<f32>, Vec<f32>>],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         get_raw_data_from_image(self, images, Self::set_raw_images_f32)
     }
-    #[cfg(feature = "image")]
     fn set_images_f64(
         &mut self,
         images: &[&ImageBuffer<Luma<f64>, Vec<f64>>],
@@ -90,7 +86,7 @@ pub trait ImageHDU: HDU + fmt::Debug + Send + Sync {
     fn stream_normalised_image(
         &self,
         index: usize,
-    ) -> Result<Option<futures::stream::BoxStream<'_, (u32, u32, f64)>>, Box<dyn Error + Send + Sync>>;
+    ) -> Result<Option<NormalisedImageStream<'_>>, Box<dyn Error + Send + Sync>>;
     fn image_data_size(&self) -> u64;
 }
 
@@ -112,7 +108,7 @@ fn get_raw_data_from_image<
         let height = images[0].width();
 
         let data = images
-            .into_iter()
+            .iter()
             .map(|image| image.iter().as_slice())
             .collect::<Vec<_>>();
 

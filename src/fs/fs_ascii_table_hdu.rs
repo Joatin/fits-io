@@ -1,15 +1,20 @@
-use crate::bin_table::{BinTable, Row};
+use crate::bin_table::BinTable;
+#[cfg(feature = "tokio")]
+use crate::bin_table::Row;
 use crate::hdu::{AsciiTableHDU, HDU};
 use crate::header::Header;
+#[cfg(feature = "tokio")]
 use futures::stream::BoxStream;
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use std::prelude::rust_2015::Box;
 
 #[derive(Debug, Clone)]
 pub struct FsAsciiTableHDU {
     header: Header,
+    // Where the table data lives; read once `read_table` is implemented.
+    #[allow(dead_code)]
     hdu_offset: u64,
+    #[allow(dead_code)]
     path: PathBuf,
 }
 
@@ -39,10 +44,11 @@ impl HDU for FsAsciiTableHDU {
 
 impl AsciiTableHDU for FsAsciiTableHDU {
     fn read_table(&self) -> Result<BinTable, Box<dyn Error + Send + Sync>> {
-        todo!()
+        Err("Reading ASCII tables is not implemented yet".into())
     }
 
+    #[cfg(feature = "tokio")]
     fn stream_table_rows(&self) -> Result<BoxStream<'_, Row<'_>>, Box<dyn Error + Send + Sync>> {
-        todo!()
+        Err("Reading ASCII tables is not implemented yet".into())
     }
 }

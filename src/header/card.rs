@@ -1,13 +1,8 @@
 use crate::header::extension_type::ExtensionType;
 use crate::header::value::Value;
 use crate::header::{BayerPattern, Bitpix, ImageType, TableColumnFormat, card_keys};
-use alloc::boxed::Box;
-use alloc::format;
-use alloc::string::String;
-use alloc::string::ToString;
-use alloc::vec::Vec;
 use chrono::{DateTime, NaiveDateTime, Utc};
-use core::error::Error;
+use std::error::Error;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Card {
@@ -233,7 +228,7 @@ pub enum Card {
         comment: Option<String>,
     },
     ExposureTime {
-        value: core::time::Duration,
+        value: std::time::Duration,
         comment: Option<String>,
     },
     CCDTemperature {
@@ -285,7 +280,7 @@ pub enum Card {
         comment: Option<String>,
     },
     Exposure {
-        value: core::time::Duration,
+        value: std::time::Duration,
         comment: Option<String>,
     },
     Ra {
@@ -1000,10 +995,7 @@ impl Card {
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
 
-        let index = key
-            .replace(card_keys::PREFIX_CDELT_N, "")
-            .parse::<usize>()?
-            - 1;
+        let index = parse_card_index(key, card_keys::PREFIX_CDELT_N)?;
 
         if let Value::Float { value, comment } = value {
             Ok(Card::CoordinateDeltaN {
@@ -1022,10 +1014,7 @@ impl Card {
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
 
-        let index = key
-            .replace(card_keys::PREFIX_CROTA_N, "")
-            .parse::<usize>()?
-            - 1;
+        let index = parse_card_index(key, card_keys::PREFIX_CROTA_N)?;
 
         if let Value::Float { value, comment } = value {
             Ok(Card::CoordinateRotationN {
@@ -1044,10 +1033,7 @@ impl Card {
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
 
-        let index = key
-            .replace(card_keys::PREFIX_CRPIX_N, "")
-            .parse::<usize>()?
-            - 1;
+        let index = parse_card_index(key, card_keys::PREFIX_CRPIX_N)?;
 
         if let Value::Float { value, comment } = value {
             Ok(Card::CoordinateReferencePixelN {
@@ -1066,10 +1052,7 @@ impl Card {
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
 
-        let index = key
-            .replace(card_keys::PREFIX_CRVAL_N, "")
-            .parse::<usize>()?
-            - 1;
+        let index = parse_card_index(key, card_keys::PREFIX_CRVAL_N)?;
 
         if let Value::Float { value, comment } = value {
             Ok(Card::CoordinateValueAtPixelN {
@@ -1088,10 +1071,7 @@ impl Card {
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
 
-        let index = key
-            .replace(card_keys::PREFIX_CTYPE_N, "")
-            .parse::<usize>()?
-            - 1;
+        let index = parse_card_index(key, card_keys::PREFIX_CTYPE_N)?;
 
         if let Value::String { value, comment } = value {
             Ok(Card::CoordinateAxisNameN {
@@ -1107,10 +1087,7 @@ impl Card {
     fn parse_naxis_n(key: &str, buf: &[u8; 80]) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
 
-        let index = key
-            .replace(card_keys::PREFIX_NAXIS_N, "")
-            .parse::<usize>()?
-            - 1;
+        let index = parse_card_index(key, card_keys::PREFIX_NAXIS_N)?;
 
         if let Value::Integer { value, comment } = value {
             Ok(Card::NAxisN {
@@ -1129,10 +1106,7 @@ impl Card {
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
 
-        let index = key
-            .replace(card_keys::PREFIX_PSCAL_N, "")
-            .parse::<usize>()?
-            - 1;
+        let index = parse_card_index(key, card_keys::PREFIX_PSCAL_N)?;
 
         if let Value::Float { value, comment } = value {
             Ok(Card::ParameterScalingFactorN {
@@ -1151,10 +1125,7 @@ impl Card {
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
 
-        let index = key
-            .replace(card_keys::PREFIX_PTYPE_N, "")
-            .parse::<usize>()?
-            - 1;
+        let index = parse_card_index(key, card_keys::PREFIX_PTYPE_N)?;
 
         if let Value::String { value, comment } = value {
             Ok(Card::ParameterTypeN {
@@ -1173,10 +1144,7 @@ impl Card {
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
 
-        let index = key
-            .replace(card_keys::PREFIX_PZERO_N, "")
-            .parse::<usize>()?
-            - 1;
+        let index = parse_card_index(key, card_keys::PREFIX_PZERO_N)?;
 
         if let Value::Float { value, comment } = value {
             Ok(Card::ParameterScalingZeroPointN {
@@ -1192,10 +1160,7 @@ impl Card {
     fn parse_table_column(key: &str, buf: &[u8; 80]) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
 
-        let index = key
-            .replace(card_keys::PREFIX_TBCOL_N, "")
-            .parse::<usize>()?
-            - 1;
+        let index = parse_card_index(key, card_keys::PREFIX_TBCOL_N)?;
 
         if let Value::Integer { value, comment } = value {
             Ok(Card::TableColumnN {
@@ -1233,10 +1198,7 @@ impl Card {
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
 
-        let index = key
-            .replace(card_keys::PREFIX_TFORM_N, "")
-            .parse::<usize>()?
-            - 1;
+        let index = parse_card_index(key, card_keys::PREFIX_TFORM_N)?;
 
         if let Value::String { value, comment } = value {
             Ok(Card::TableFormatN {
@@ -1255,10 +1217,7 @@ impl Card {
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
 
-        let index = key
-            .replace(card_keys::PREFIX_TDISP_N, "")
-            .parse::<usize>()?
-            - 1;
+        let index = parse_card_index(key, card_keys::PREFIX_TDISP_N)?;
 
         if let Value::String { value, comment } = value {
             Ok(Card::TableDisplayFormatN {
@@ -1277,10 +1236,7 @@ impl Card {
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
 
-        let index = key
-            .replace(card_keys::PREFIX_TNULL_N, "")
-            .parse::<usize>()?
-            - 1;
+        let index = parse_card_index(key, card_keys::PREFIX_TNULL_N)?;
 
         if let Value::String { value, comment } = value {
             Ok(Card::TableNullValueN {
@@ -1299,10 +1255,7 @@ impl Card {
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
 
-        let index = key
-            .replace(card_keys::PREFIX_TSCAL_N, "")
-            .parse::<usize>()?
-            - 1;
+        let index = parse_card_index(key, card_keys::PREFIX_TSCAL_N)?;
 
         if let Value::Float { value, comment } = value {
             Ok(Card::TableScalingFactorN {
@@ -1318,10 +1271,7 @@ impl Card {
     fn parse_table_type(key: &str, buf: &[u8; 80]) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
 
-        let index = key
-            .replace(card_keys::PREFIX_TTYPE_N, "")
-            .parse::<usize>()?
-            - 1;
+        let index = parse_card_index(key, card_keys::PREFIX_TTYPE_N)?;
 
         if let Value::String { value, comment } = value {
             Ok(Card::TableTypeN {
@@ -1337,10 +1287,7 @@ impl Card {
     fn parse_table_unit(key: &str, buf: &[u8; 80]) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
 
-        let index = key
-            .replace(card_keys::PREFIX_TUNIT_N, "")
-            .parse::<usize>()?
-            - 1;
+        let index = parse_card_index(key, card_keys::PREFIX_TUNIT_N)?;
 
         if let Value::String { value, comment } = value {
             Ok(Card::TableUnitN {
@@ -1359,10 +1306,7 @@ impl Card {
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
 
-        let index = key
-            .replace(card_keys::PREFIX_TZERO_N, "")
-            .parse::<usize>()?
-            - 1;
+        let index = parse_card_index(key, card_keys::PREFIX_TZERO_N)?;
 
         if let Value::Float { value, comment } = value {
             Ok(Card::TableScalingZeroPointN {
@@ -1494,6 +1438,21 @@ impl Card {
 fn parse_comment_text(buf: &[u8]) -> Result<String, Box<dyn Error + Send + Sync>> {
     let raw = std::str::from_utf8(buf.trim_ascii())?;
     Ok(raw.trim_ascii().into())
+}
+
+/// Parses the trailing 1-based index of an indexed keyword (`NAXIS3`, `TFORM7`, ...)
+/// into the 0-based index used by [`Card`].
+///
+/// Returns an error rather than panicking on a malformed keyword: `NAXIS0` has no
+/// 0-based equivalent, and `NAXISx` does not parse as a number at all.
+fn parse_card_index(key: &str, prefix: &str) -> Result<usize, Box<dyn Error + Send + Sync>> {
+    let index = key.replace(prefix, "");
+
+    index
+        .parse::<usize>()
+        .map_err(|error| format!("Invalid index in card keyword {}: {}", key, error))?
+        .checked_sub(1)
+        .ok_or_else(|| format!("Card keyword {} is not a valid 1-based index", key).into())
 }
 
 fn parse_continuation(_buf: &[u8; 80]) -> Result<Card, Box<dyn Error + Send + Sync>> {

@@ -1,3 +1,6 @@
+mod common;
+
+use common::fixture;
 use fits_io::Fits;
 use fits_io::fs::FsFits;
 use fits_io::hdu::{BinTableHDU, ExtensionHDU};
@@ -12,7 +15,11 @@ struct GaiaCatalogEntry {
 
 #[test]
 pub fn open_bin_table_should_work() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let fits = FsFits::open("tests/gaia-dr3-mag-gt-12.fits".as_ref())?;
+    let Some(path) = fixture("gaia-dr3-mag-gt-12.fits") else {
+        return Ok(());
+    };
+
+    let fits = FsFits::open(&path)?;
 
     if let Some(ExtensionHDU::BinTable(bin_table)) = fits.extension_hdu(0) {
         let rows: Vec<GaiaCatalogEntry> = bin_table.read_rows()?;

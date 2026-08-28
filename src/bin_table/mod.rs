@@ -14,7 +14,7 @@ mod from_bin_table_row;
 #[cfg(feature = "serde")]
 mod to_bin_table;
 
-pub use self::bin_table::BinTable;
+pub use self::bin_table::{BinTable, FieldDefinition};
 pub use self::row::Row;
 pub use self::value::Value;
 

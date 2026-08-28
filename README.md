@@ -1,19 +1,18 @@
 # FitsIo
 
-A safe, ergonomic, and pure-Rust library for reading and writing FITS (Flexible Image Transport System) files, inspired by CFITSIO.
+A safe, ergonomic, and pure-Rust library for reading FITS (Flexible Image Transport System) files, inspired by CFITSIO. Writing is planned; see the feature table below.
 
-This crate supports no_std environments, optional async I/O with Tokio, and structured access to FITS headers, images, and tables — without any C dependencies.
+This crate offers optional async I/O with Tokio and structured access to FITS headers, images, and tables — without any C dependencies.
 
-Designed for astronomy, astrophotography, embedded systems, and scientific pipelines where portability and safety matter.
+Designed for astronomy, astrophotography, and scientific pipelines where portability and safety matter.
 
 ## Features
 
 * 📦 Pure Rust implementation (no CFITSIO, no C bindings)
-* 🚫 no_std compatible
 * ⚡ Async I/O with Tokio (enabled by default)
 * 🧩 Support for Primary HDUs and extensions
 * 🖼️ Image HDUs
-* 📊 ASCII tables and binary tables
+* 📊 Binary tables, with optional `serde` deserialisation into your own structs
 * 🧠 Typed access to FITS header keywords
 * 🚀 Streaming and memory-efficient reads
 * 🛡️ Idiomatic error handling with Result
@@ -27,11 +26,18 @@ Add the crate to your Cargo.toml:
 fits-io = "0.1"
 ```
 
-**no_std** mode
-```toml
-[dependencies]
-fits-io = { version = "0.1", default-features = false }
-```
+### Feature flags
+
+`default-features = false` gives you header, image and table parsing over
+in-memory data, with no filesystem, async or threading support.
+
+| Feature | Default | Effect                                                    |
+|---------|---------|-----------------------------------------------------------|
+| `fs`    | ✅      | Read FITS files from the filesystem via `FsFits`          |
+| `gzip`  | ✅      | Transparently decompress `.fits.gz` files (implies `fs`)  |
+| `tokio` | ✅      | Async open and streaming reads                            |
+| `rayon` | ✅      | Parallel binary-table row decoding                        |
+| `serde` |         | Deserialize binary-table rows into your own structs       |
 
 ## Design Goals
 
@@ -43,16 +49,21 @@ fits-io = { version = "0.1", default-features = false }
 
 ## Supported FITS Features
 
-| Feature           | Status |
-|-------------------|--------|
-| Primary HDU       | ✅      |
-| Image HDU	        | ✅      |
-| Binary Tables     | ✅      |
-| ASCII Tables	     | ✅      | 
-| Header read/write | ✅      | 
-| Compression       | ✅      |
-| Streaming I/O	    | 🚧     |    
-| WCS helpers	      | 🚧     |
+| Feature                    | Status | Notes                                              |
+|----------------------------|--------|----------------------------------------------------|
+| Primary HDU                | ✅      |                                                    |
+| Extension HDUs             | ✅      |                                                    |
+| Image HDU                  | ✅      | Including 3-axis cubes                             |
+| Binary tables              | ✅      | Read; `serde` deserialises rows into your structs  |
+| ASCII tables               | 🚧     | Detected, but reading is not implemented           |
+| Header read                | ✅      |                                                    |
+| Gzip decompression         | ✅      | `.fits.gz` and friends, via the `gzip` feature     |
+| Streaming image reads      | ✅      | `stream_normalised_image`, via the `tokio` feature |
+| Streaming table rows       | 🚧     |                                                    |
+| Writing (headers and data) | 🚧     | Every write entry point returns an error today     |
+| Variable-length array columns | 🚧  | TFORMn `P` and `Q` descriptors                     |
+| Complex columns            | 🚧     | TFORMn `C` and `M`                                 |
+| WCS helpers                | 🚧     |                                                    |
 
 ## License
 

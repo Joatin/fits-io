@@ -9,3 +9,5 @@ pub use self::bin_table_hdu::BinTableHDU;
 pub use self::extension_hdu::ExtensionHDU;
 pub use self::hdu::HDU;
 pub use self::image_hdu::ImageHDU;
+#[cfg(feature = "tokio")]
+pub use self::image_hdu::NormalisedImageStream;
