@@ -14,8 +14,10 @@ use std::error::Error;
 pub struct Wcs {
     reference_pixel: (f64, f64),
     reference_value: (f64, f64),
-    scale: (f64, f64),
-    rotation: f64,
+    /// Row-major, taking pixel offsets to intermediate world coordinates.
+    transform: [[f64; 2]; 2],
+    /// Its inverse, worked out once so that `world_to_pixel` need not.
+    inverse: [[f64; 2]; 2],
     projection: Projection,
 }
 
@@ -47,19 +49,17 @@ impl Wcs {
             axis("CRVAL", header.coordinate_value_at_pixel(1), 1)?,
         );
 
-        // CDELTn defaults to 1: a header that gives no scale is in units of one
-        // world unit per pixel, not an unusable one.
-        let scale = (
-            header.coordinate_delta(0).unwrap_or(1.0),
-            header.coordinate_delta(1).unwrap_or(1.0),
-        );
+        let transform = transform_from(header);
 
-        // CROTA is carried on the second axis by convention, but accept it on
-        // the first for the headers that put it there.
-        let rotation = header
-            .coordinate_rotation(1)
-            .or_else(|| header.coordinate_rotation(0))
-            .unwrap_or(0.0);
+        // A matrix that cannot be inverted maps every pixel onto the same point,
+        // so there is no coordinate system here to speak of.
+        let inverse = invert(transform).ok_or_else(|| {
+            format!(
+                "The header's coordinate transformation matrix {:?} cannot be inverted, so it \
+                 describes no usable world coordinate system",
+                transform
+            )
+        })?;
 
         // Both axes must agree on the projection; the first one names it.
         let projection = match header.coordinate_axis_name(0) {
@@ -70,10 +70,20 @@ impl Wcs {
         Ok(Self {
             reference_pixel,
             reference_value,
-            scale,
-            rotation,
+            transform,
+            inverse,
             projection,
         })
+    }
+
+    /// The matrix taking pixel offsets to intermediate world coordinates,
+    /// row-major.
+    ///
+    /// Whichever of the three conventions the header used — a CDi_j matrix, a
+    /// PCi_j matrix with CDELTn, or CDELTn with CROTAn — this is what it came
+    /// to.
+    pub fn transform(&self) -> [[f64; 2]; 2] {
+        self.transform
     }
 
     /// The projection this system uses.
@@ -137,32 +147,24 @@ impl Wcs {
         (x < width && y < height).then_some((x, y))
     }
 
-    /// Pixel offsets from the reference pixel, rotated and scaled into the
-    /// intermediate world coordinates the projection works in.
+    /// Pixel offsets from the reference pixel, put through the transformation
+    /// matrix into the intermediate world coordinates the projection works in.
     fn pixel_to_intermediate(&self, pixel: (f64, f64)) -> (f64, f64) {
         let offset = (
             pixel.0 - self.reference_pixel.0,
             pixel.1 - self.reference_pixel.1,
         );
 
-        let (sin, cos) = self.rotation.to_radians().sin_cos();
-
-        (
-            self.scale.0 * (cos * offset.0 - sin * offset.1),
-            self.scale.1 * (sin * offset.0 + cos * offset.1),
-        )
+        apply(self.transform, offset)
     }
 
     /// The inverse of [`Wcs::pixel_to_intermediate`].
     fn intermediate_to_pixel(&self, intermediate: (f64, f64)) -> (f64, f64) {
-        // Undo the scale first, then the rotation.
-        let (x, y) = (intermediate.0 / self.scale.0, intermediate.1 / self.scale.1);
-
-        let (sin, cos) = self.rotation.to_radians().sin_cos();
+        let offset = apply(self.inverse, intermediate);
 
         (
-            self.reference_pixel.0 + cos * x + sin * y,
-            self.reference_pixel.1 - sin * x + cos * y,
+            self.reference_pixel.0 + offset.0,
+            self.reference_pixel.1 + offset.1,
         )
     }
 
@@ -216,6 +218,93 @@ impl Wcs {
     }
 }
 
+/// Reads the transformation matrix out of whichever convention the header uses.
+///
+/// FITS has three ways of saying the same thing, and they are tried in the order
+/// the standard gives them:
+///
+/// 1. `CDi_j`, which carries the scale and the rotation together. This is what
+///    most modern pipelines write, and when it is present CDELTn and CROTAn are
+///    ignored.
+/// 2. `PCi_j` scaled by `CDELTn`, which separates the rotation from the scale.
+/// 3. `CDELTn` with `CROTAn`, the older convention, where the rotation is a
+///    single angle.
+///
+/// Reading only the third and defaulting the scale to 1 leaves a `CDi_j` header
+/// pointing a whole degree per pixel away from where it means.
+fn transform_from(header: &Header) -> [[f64; 2]; 2] {
+    let element = |row, column| header.coordinate_transform(row, column);
+
+    // Any CDi_j at all means the header uses the CD convention; the elements it
+    // leaves out are zero, as the standard says.
+    if (0..2).any(|row| (0..2).any(|column| element(row, column).is_some())) {
+        return [
+            [element(0, 0).unwrap_or(0.0), element(0, 1).unwrap_or(0.0)],
+            [element(1, 0).unwrap_or(0.0), element(1, 1).unwrap_or(0.0)],
+        ];
+    }
+
+    // CDELTn defaults to 1, which is what the standard says a header with no
+    // scale at all means.
+    let scale = (
+        header.coordinate_delta(0).unwrap_or(1.0),
+        header.coordinate_delta(1).unwrap_or(1.0),
+    );
+
+    let rotation = |row, column| header.coordinate_rotation_matrix(row, column);
+
+    if (0..2).any(|row| (0..2).any(|column| rotation(row, column).is_some())) {
+        // A PCi_j the header leaves out is the identity matrix's value there.
+        let identity = |row: usize, column: usize| {
+            if row == column { 1.0 } else { 0.0 }
+        };
+        let element = |row, column| rotation(row, column).unwrap_or_else(|| identity(row, column));
+
+        return [
+            [scale.0 * element(0, 0), scale.0 * element(0, 1)],
+            [scale.1 * element(1, 0), scale.1 * element(1, 1)],
+        ];
+    }
+
+    // CROTAn is carried on the second axis by convention, but accept it on the
+    // first for the headers that put it there.
+    let angle = header
+        .coordinate_rotation(1)
+        .or_else(|| header.coordinate_rotation(0))
+        .unwrap_or(0.0);
+    let (sin, cos) = angle.to_radians().sin_cos();
+
+    // The standard's relation between CROTAn and the matrix. Note which CDELT
+    // goes with which element: the off-diagonal terms take the scale of the axis
+    // they draw from, not the one they feed.
+    [
+        [scale.0 * cos, -scale.1 * sin],
+        [scale.0 * sin, scale.1 * cos],
+    ]
+}
+
+/// Multiplies a two-element offset by a matrix.
+fn apply(matrix: [[f64; 2]; 2], offset: (f64, f64)) -> (f64, f64) {
+    (
+        matrix[0][0] * offset.0 + matrix[0][1] * offset.1,
+        matrix[1][0] * offset.0 + matrix[1][1] * offset.1,
+    )
+}
+
+/// Inverts a two-by-two matrix, or `None` if it is singular.
+fn invert(matrix: [[f64; 2]; 2]) -> Option<[[f64; 2]; 2]> {
+    let determinant = matrix[0][0] * matrix[1][1] - matrix[0][1] * matrix[1][0];
+
+    if determinant == 0.0 || !determinant.is_finite() {
+        return None;
+    }
+
+    Some([
+        [matrix[1][1] / determinant, -matrix[0][1] / determinant],
+        [-matrix[1][0] / determinant, matrix[0][0] / determinant],
+    ])
+}
+
 /// Wraps a longitude into `0.0..360.0`.
 fn normalise_longitude(degrees: f64) -> f64 {
     let wrapped = degrees % 360.0;
@@ -228,15 +317,25 @@ fn normalise_longitude(degrees: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Wcs, normalise_longitude};
+    use super::{Wcs, invert, normalise_longitude};
     use crate::wcs::Projection;
 
+    /// A system with the given projection and rotation, built the way a CROTAn
+    /// header would express it.
     fn wcs(projection: Projection, rotation: f64) -> Wcs {
+        let scale = (-0.001, 0.001);
+        let (sin, cos) = f64::to_radians(rotation).sin_cos();
+
+        let transform = [
+            [scale.0 * cos, -scale.1 * sin],
+            [scale.0 * sin, scale.1 * cos],
+        ];
+
         Wcs {
             reference_pixel: (100.5, 200.5),
             reference_value: (150.0, 40.0),
-            scale: (-0.001, 0.001),
-            rotation,
+            transform,
+            inverse: super::invert(transform).expect("a rotation is invertible"),
             projection,
         }
     }
@@ -311,6 +410,16 @@ mod tests {
 
         let world = wcs.pixel_to_world_indexed((400, 400));
         assert_eq!(wcs.world_to_pixel_indexed(world, 100, 100), None);
+    }
+
+    #[test]
+    fn a_singular_matrix_has_no_inverse() {
+        // Two axes that map onto the same line describe no coordinate system:
+        // every pixel would land on the same place, and nothing maps back.
+        assert!(invert([[1.0, 2.0], [2.0, 4.0]]).is_none());
+        assert!(invert([[0.0, 0.0], [0.0, 0.0]]).is_none());
+
+        assert!(invert([[1.0, 0.0], [0.0, 1.0]]).is_some());
     }
 
     #[test]

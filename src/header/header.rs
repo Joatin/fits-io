@@ -744,6 +744,42 @@ impl Header {
         })
     }
 
+    /// The CDi_j card: one element of the matrix taking pixel offsets to
+    /// intermediate world coordinates.
+    ///
+    /// `row` and `column` count from 0, so CD1_1 is `coordinate_transform(0, 0)`.
+    /// This matrix carries the scale as well as the rotation, which is why a
+    /// header using it has no CDELTn cards.
+    pub fn coordinate_transform(&self, row: usize, column: usize) -> Option<f64> {
+        self.matrix_element("CD", row, column)
+    }
+
+    /// The PCi_j card: one element of the dimensionless matrix that rotates and
+    /// skews pixel offsets, before CDELTn scales them.
+    ///
+    /// `row` and `column` count from 0, so PC1_1 is
+    /// `coordinate_rotation_matrix(0, 0)`.
+    pub fn coordinate_rotation_matrix(&self, row: usize, column: usize) -> Option<f64> {
+        self.matrix_element("PC", row, column)
+    }
+
+    /// Reads one element of a two-index keyword family such as CDi_j.
+    ///
+    /// These are not among the keywords this crate models individually, so they
+    /// arrive as plain value cards and are looked up by name.
+    fn matrix_element(&self, prefix: &str, row: usize, column: usize) -> Option<f64> {
+        let key = format!("{}{}_{}", prefix, row + 1, column + 1);
+
+        self.raw_card(&key)
+            .into_iter()
+            .find_map(|value| match value {
+                Value::Float { value, .. } => Some(value),
+                // A whole number is commonly written without a decimal point.
+                Value::Integer { value, .. } => Some(value as f64),
+                _ => None,
+            })
+    }
+
     /// The CTYPEn card for axis `index`: what the axis measures, and the
     /// projection it uses.
     pub fn coordinate_axis_name(&self, index: usize) -> Option<&str> {
