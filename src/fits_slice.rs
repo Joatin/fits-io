@@ -83,6 +83,14 @@ impl FitsSlice {
                     offset += hdu.byte_size();
                     extension_hdus.push(ExtensionHDU::Image(hdu));
                 }
+                // A compressed image is stored as a table, but it is an image,
+                // and presenting it as a table of opaque bytes would leave every
+                // caller to notice and unpack it themselves.
+                ExtensionType::BinTable if header.is_compressed_image() => {
+                    let hdu = SliceImageHDU::new(header, Arc::clone(&data), data_offset);
+                    offset += hdu.byte_size();
+                    extension_hdus.push(ExtensionHDU::Image(hdu));
+                }
                 ExtensionType::BinTable => {
                     let hdu = SliceBinTableHDU::new(header, Arc::clone(&data), data_offset);
                     offset += hdu.byte_size();

@@ -440,3 +440,51 @@ fn a_header_that_matches_its_data_still_writes() -> TestResult {
 
     Ok(())
 }
+
+#[test]
+fn an_array_of_more_than_three_axes_can_be_written() -> TestResult {
+    // Reading a hypercube worked; writing one had no way to say the shape,
+    // because `set_raw_images_*` takes a set of two-dimensional planes.
+    let mut fits = open("write-hypercube.fits", &minimal_image())?;
+
+    let values: Vec<u8> = (1..=24).collect();
+    fits.primary_hdu_mut()
+        .set_raw_array_u8(&[2, 2, 2, 3], &values)?;
+
+    let header = fits.primary_hdu().header();
+    assert_eq!(header.naxis(), Some(4));
+    assert_eq!(header.naxis_n(3), Some(3));
+
+    // Six planes of four pixels, as reading one gives back.
+    assert_eq!(fits.primary_hdu().image_count(), 6);
+
+    let path = write_temp_fits("written-hypercube.fits", &fits.to_vec()?)?;
+    let reopened = FsFits::open(&path)?;
+
+    assert_eq!(reopened.primary_hdu().image_count(), 6);
+    assert_eq!(
+        raw_u8(
+            &reopened
+                .primary_hdu()
+                .read_image(5)?
+                .expect("a sixth plane")
+        ),
+        vec![21, 22, 23, 24]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn an_array_whose_values_do_not_fill_its_shape_is_rejected() -> TestResult {
+    let mut fits = open("write-shape-mismatch.fits", &minimal_image())?;
+
+    let error = fits
+        .primary_hdu_mut()
+        .set_raw_array_u8(&[2, 2, 2], &[1, 2, 3])
+        .expect_err("eight values are needed, not three");
+
+    assert!(error.to_string().contains("8 values"), "got: {error}");
+
+    Ok(())
+}

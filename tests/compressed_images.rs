@@ -9,7 +9,7 @@
 mod common;
 
 use common::{append_extension, fits_file, write_temp_fits};
-use fits_io::hdu::{BinTableHDU, ExtensionHDU};
+use fits_io::hdu::{BinTableHDU, ExtensionHDU, HDU, ImageHDU};
 use fits_io::image::Image;
 use fits_io::{Fits, FitsSlice};
 use std::error::Error;
@@ -72,9 +72,10 @@ fn open(name: &str, file: &[u8]) -> Result<FitsSlice, Box<dyn Error + Send + Syn
     FitsSlice::from_slice(file)
 }
 
-fn table(fits: &FitsSlice) -> &impl BinTableHDU {
-    let Some(ExtensionHDU::BinTable(hdu)) = fits.extension_hdu(0) else {
-        panic!("a compressed image is stored as a binary table");
+/// The compressed image extension, which the reader hands back as an image.
+fn image_hdu(fits: &FitsSlice) -> &impl ImageHDU {
+    let Some(ExtensionHDU::Image(hdu)) = fits.extension_hdu(0) else {
+        panic!("a compressed image extension reads as an image");
     };
     hdu
 }
@@ -119,9 +120,9 @@ fn a_rice_compressed_image_is_reassembled_from_its_tiles() -> TestResult {
     let file = compressed_image(&gradient_cards(), &GRADIENT_TILES);
     let fits = open("compressed-rice.fits", &file)?;
 
-    let image = table(&fits)
-        .read_compressed_image()?
-        .expect("this table holds a compressed image");
+    let image = image_hdu(&fits)
+        .read_image(0)?
+        .expect("the extension holds an image");
 
     assert_eq!(image.width(), 8);
     assert_eq!(image.height(), 6);
@@ -136,11 +137,18 @@ fn a_rice_compressed_image_is_reassembled_from_its_tiles() -> TestResult {
 }
 
 #[test]
-fn a_compressed_table_says_that_it_is_one() -> TestResult {
+fn a_compressed_extension_reports_the_images_own_shape() -> TestResult {
+    // The table it is stored in is 8 bytes by 6 rows; the image is 8 by 6
+    // pixels of 16-bit data. Reporting the table's shape would be useless.
     let file = compressed_image(&gradient_cards(), &GRADIENT_TILES);
     let fits = open("compressed-flag.fits", &file)?;
 
-    assert!(table(&fits).is_compressed_image());
+    let hdu = image_hdu(&fits);
+
+    assert_eq!(hdu.image_count(), 1);
+    assert_eq!(hdu.images_width(), 8);
+    assert_eq!(hdu.images_height(), 6);
+    assert_eq!(hdu.image_data_size(), 8 * 6 * 2);
 
     Ok(())
 }
@@ -174,8 +182,11 @@ fn an_ordinary_table_is_not_a_compressed_image() -> TestResult {
 
     let fits = open("compressed-not.fits", &file)?;
 
-    assert!(!table(&fits).is_compressed_image());
-    assert!(table(&fits).read_compressed_image()?.is_none());
+    let Some(ExtensionHDU::BinTable(hdu)) = fits.extension_hdu(0) else {
+        panic!("an ordinary table still reads as a table");
+    };
+    assert!(!hdu.is_compressed_image());
+    assert!(hdu.read_compressed_image()?.is_none());
 
     Ok(())
 }
@@ -203,9 +214,9 @@ fn an_uncompressed_tile_is_read_as_it_stands() -> TestResult {
     );
 
     let fits = open("compressed-none.fits", &file)?;
-    let image = table(&fits)
-        .read_compressed_image()?
-        .expect("this table holds a compressed image");
+    let image = image_hdu(&fits)
+        .read_image(0)?
+        .expect("the extension holds an image");
 
     assert_eq!(raw_i16(&image), vec![10, 20, 30, 40]);
 
@@ -242,9 +253,9 @@ fn a_gzip_compressed_tile_is_read() -> TestResult {
     );
 
     let fits = open("compressed-gzip.fits", &file)?;
-    let image = table(&fits)
-        .read_compressed_image()?
-        .expect("this table holds a compressed image");
+    let image = image_hdu(&fits)
+        .read_image(0)?
+        .expect("the extension holds an image");
 
     assert_eq!(raw_i16(&image), vec![7, -7, 1000, -1000]);
 
@@ -269,8 +280,8 @@ fn an_unsupported_algorithm_is_an_error_rather_than_noise() -> TestResult {
     );
 
     let fits = open("compressed-hcompress.fits", &file)?;
-    let error = table(&fits)
-        .read_compressed_image()
+    let error = image_hdu(&fits)
+        .read_image(0)
         .expect_err("HCOMPRESS is not implemented");
 
     assert!(error.to_string().contains("HCOMPRESS_1"), "got: {error}");
@@ -280,8 +291,6 @@ fn an_unsupported_algorithm_is_an_error_rather_than_noise() -> TestResult {
 
 #[test]
 fn the_image_header_drops_the_table_and_keeps_the_rest() -> TestResult {
-    use fits_io::hdu::HDU;
-
     // A caller wanting the WCS of a compressed image needs the header the image
     // would have had, not the table's.
     let mut cards = gradient_cards();
@@ -291,7 +300,7 @@ fn the_image_header_drops_the_table_and_keeps_the_rest() -> TestResult {
     let file = compressed_image(&cards, &GRADIENT_TILES);
     let fits = open("compressed-header.fits", &file)?;
 
-    let header = table(&fits).header().uncompressed();
+    let header = image_hdu(&fits).header().uncompressed();
 
     // The image's own shape, taken from the Z keywords.
     assert_eq!(header.naxis(), Some(2));
@@ -306,6 +315,98 @@ fn the_image_header_drops_the_table_and_keeps_the_rest() -> TestResult {
     // Anything describing the sky comes across untouched.
     assert_eq!(header.coordinate_axis_name(0), Some("RA---TAN"));
     assert_eq!(header.coordinate_reference_pixel(0), Some(4.0));
+
+    Ok(())
+}
+
+#[test]
+fn an_extension_after_a_compressed_one_is_still_found() -> TestResult {
+    // A compressed HDU occupies as much of the file as its *table* does, not as
+    // much as the image it stands for. Sizing it by the image would put every
+    // following HDU at the wrong offset -- and the two differ here, the table
+    // being far smaller than the 96 bytes of pixels it encodes.
+    let mut file = compressed_image(&gradient_cards(), &GRADIENT_TILES);
+
+    append_extension(
+        &mut file,
+        &[
+            ("XTENSION", "'IMAGE   '"),
+            ("BITPIX", "8"),
+            ("NAXIS", "2"),
+            ("NAXIS1", "2"),
+            ("NAXIS2", "2"),
+            ("PCOUNT", "0"),
+            ("GCOUNT", "1"),
+        ],
+        &[9, 8, 7, 6],
+    );
+
+    let fits = open("compressed-then-image.fits", &file)?;
+
+    assert_eq!(fits.extension_count(), 2);
+
+    // The compressed image, unpacked.
+    let Some(ExtensionHDU::Image(compressed)) = fits.extension_hdu(0) else {
+        panic!("the first extension is the compressed image");
+    };
+    assert_eq!(compressed.images_width(), 8);
+
+    // And the plain image after it, which is only reachable if the first HDU's
+    // size was worked out from its table.
+    let Some(ExtensionHDU::Image(plain)) = fits.extension_hdu(1) else {
+        panic!("the second extension is a plain image");
+    };
+    let image = plain.read_image(0)?.expect("one image");
+    match &image {
+        Image::U8(data) => assert_eq!(data.raw(), &[9, 8, 7, 6]),
+        other => panic!("expected an 8-bit image, got {other:?}"),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn a_compressed_extension_is_written_back_untouched() -> TestResult {
+    // Writing must not try to re-encode the image; the HDU still holds the table
+    // it was read from, and that is what goes back out.
+    let file = compressed_image(&gradient_cards(), &GRADIENT_TILES);
+    let fits = open("compressed-rewrite.fits", &file)?;
+
+    let reopened = FitsSlice::from_slice(&fits.to_vec()?)?;
+    let image = image_hdu(&reopened)
+        .read_image(0)?
+        .expect("the extension holds an image");
+
+    let expected: Vec<i16> = (0..6)
+        .flat_map(|row| (0..8).map(move |column| column * 3 + row))
+        .collect();
+
+    assert_eq!(raw_i16(&image), expected);
+
+    Ok(())
+}
+
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn a_compressed_image_streams_its_pixels() -> TestResult {
+    use futures::StreamExt;
+
+    let file = compressed_image(&gradient_cards(), &GRADIENT_TILES);
+    let fits = open("compressed-stream.fits", &file)?;
+
+    let pixels: Vec<_> = image_hdu(&fits)
+        .stream_normalised_image(0)?
+        .expect("the extension holds an image")
+        .collect()
+        .await;
+
+    assert_eq!(pixels.len(), 8 * 6);
+
+    // The corners of the gradient, normalised across its full range.
+    assert_eq!(pixels[0].0, 0);
+    assert_eq!(pixels[0].1, 0);
+    assert_eq!(pixels[47].0, 7);
+    assert_eq!(pixels[47].1, 5);
 
     Ok(())
 }

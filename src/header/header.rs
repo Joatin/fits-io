@@ -1205,6 +1205,29 @@ impl Header {
             })
     }
 
+    /// How many two-dimensional planes the image inside a compressed table
+    /// holds.
+    pub(crate) fn compressed_plane_count(&self) -> usize {
+        let Some(axes) = self.compressed_naxis() else {
+            return 0;
+        };
+
+        if axes < 2 {
+            return 0;
+        }
+
+        let mut planes = 1_usize;
+        for axis in 2..axes as usize {
+            let length = self.compressed_naxis_n(axis).unwrap_or(0).max(0) as usize;
+            let Some(product) = planes.checked_mul(length) else {
+                return 0;
+            };
+            planes = product;
+        }
+
+        planes
+    }
+
     /// The header the decompressed image would have.
     ///
     /// Every card that describes the table rather than the image is dropped, and

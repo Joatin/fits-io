@@ -55,6 +55,14 @@ impl FsFits {
                         offset += extension_hdu.byte_size();
                         extension_hdus.push(ExtensionHDU::Image(extension_hdu));
                     }
+                    // A compressed image is stored as a table, but it is an
+                    // image, and presenting it as a table of opaque bytes would
+                    // leave every caller to notice and unpack it themselves.
+                    ExtensionType::BinTable if header.is_compressed_image() => {
+                        let extension_hdu = FsImageHDU::new_extension(path, header, offset)?;
+                        offset += extension_hdu.byte_size();
+                        extension_hdus.push(ExtensionHDU::Image(extension_hdu));
+                    }
                     ExtensionType::BinTable => {
                         let extension_hdu = FsBinTableHDU::new(path, header, offset)?;
                         offset += extension_hdu.byte_size();

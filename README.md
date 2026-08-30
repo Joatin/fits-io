@@ -16,7 +16,7 @@ portability and safety matter.
 * 🧩 Support for Primary HDUs and extensions
 * 🖼️ Image HDUs of any dimensionality, cubes and hypercubes included
 * 📊 Binary and ASCII tables alike, with optional `serde` support in both directions
-* 🗜️ Tile-compressed images, as `fpack` and the archives distribute them
+* 🗜️ Tile-compressed images, read as images like any other
 * 🌍 World coordinate helpers: pixels to sky positions and back
 * 🧠 Typed access to FITS header keywords
 * 🚀 Streaming and memory-efficient reads
@@ -230,7 +230,7 @@ enabled so the `serde`, `tokio` and `gzip` parts are visible.
 | Undefined image pixels        | ✅      | BLANK reads as NaN rather than as black                  |
 | Header read                   | ✅      |                                                          |
 | Header write                  | ✅      | Mandatory cards filled in and ordered as the standard asks |
-| Image write                   | ✅      | `set_raw_images_*`, then `save` or `to_vec`              |
+| Image write                   | ✅      | Any number of axes, then `save` or `to_vec`              |
 | Table write                   | ✅      | `set_table` / `set_rows`, for both table kinds           |
 | Building files                 | ✅      | `push_extension` and `remove_extension`                  |
 | Gzip decompression            | ✅      | `.fits.gz` files and gzipped buffers alike               |
@@ -239,7 +239,7 @@ enabled so the `serde`, `tokio` and `gzip` parts are visible.
 | WCS helpers                   | ✅      | `CDi_j`, `PCi_j` and `CDELTn`/`CROTAn`; linear and `TAN` |
 | CHECKSUM and DATASUM          | ✅      | Written on save; `checksum::verify` checks an HDU        |
 | Random groups                 | ✅      | `group_count` and `read_group`, with PSCALn and PZEROn   |
-| Compressed image extensions   | ✅      | Tiled `RICE_1`, `GZIP_1`, `GZIP_2` and `NOCOMPRESS`      |
+| Compressed image extensions   | ✅      | Read as images; `RICE_1`, `GZIP_1`, `GZIP_2`, `NOCOMPRESS` |
 
 ## License
 

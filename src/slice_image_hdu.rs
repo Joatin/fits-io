@@ -59,6 +59,37 @@ impl SliceImageHDU {
             .unwrap_or_default()
     }
 
+    /// Whether this HDU is an image stored compressed inside a table.
+    fn is_compressed(&self) -> bool {
+        self.header.is_compressed_image()
+    }
+
+    /// The width and height of the image, whether it is stored plainly or
+    /// compressed.
+    fn dimensions(&self) -> (u32, u32) {
+        let axis = |index: usize| {
+            let length = if self.is_compressed() {
+                self.header.compressed_naxis_n(index)
+            } else {
+                self.header.naxis_n(index)
+            };
+
+            length
+                .and_then(|length| u32::try_from(length).ok())
+                .unwrap_or(0)
+        };
+
+        (axis(0), axis(1))
+    }
+
+    /// Decompresses the image this HDU's table stands for.
+    fn read_compressed(&self) -> Result<Image, Box<dyn Error + Send + Sync>> {
+        let bytes = self.data_bytes().to_vec();
+        let table = crate::bin_table::BinTable::from_u8(&self.header, bytes)?;
+
+        crate::image::compression::read_image(&self.header, &table)
+    }
+
     fn image_bytes(&self, index: usize) -> &[u8] {
         let size = self.image_data_size() as usize;
         let start = size.saturating_mul(index);
@@ -85,65 +116,59 @@ impl SliceImageHDU {
             .to_vec())
     }
 
-    fn set_raw_images<T: Copy, const N: usize>(
+    /// Stores `values` as this HDU's data and brings the header into line with
+    /// the shape they are in.
+    fn set_raw_array<T: Copy, const N: usize>(
         &mut self,
         bitpix: Bitpix,
-        width: u32,
-        height: u32,
-        images: &[&[T]],
+        shape: &[u32],
+        values: &[T],
         to_be_bytes: impl Fn(T) -> [u8; N],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        if images.is_empty() {
+        if shape.is_empty() {
             return self.clear_images();
         }
 
-        let pixels = (width as usize)
-            .checked_mul(height as usize)
-            .ok_or("Image dimensions overflow the address space")?;
-
-        for (index, image) in images.iter().enumerate() {
-            if image.len() != pixels {
-                return Err(format!(
-                    "Image {} has {} pixels, but a {}x{} image has {}",
-                    index,
-                    image.len(),
-                    width,
-                    height,
-                    pixels
-                )
-                .into());
-            }
+        let mut expected = 1_usize;
+        for length in shape {
+            expected = expected
+                .checked_mul(*length as usize)
+                .ok_or("Array dimensions overflow the address space")?;
         }
 
-        let mut data = Vec::with_capacity(images.len() * pixels * N);
-        for image in images {
-            for value in image.iter() {
-                data.extend_from_slice(&to_be_bytes(*value));
-            }
+        if values.len() != expected {
+            return Err(format!(
+                "An array of {:?} holds {} values, but {} were given",
+                shape,
+                expected,
+                values.len()
+            )
+            .into());
+        }
+
+        let mut data = Vec::with_capacity(expected * N);
+        for value in values {
+            data.extend_from_slice(&to_be_bytes(*value));
         }
 
         self.header.set(Card::Bitpix {
             value: bitpix,
             comment: None,
         });
-
-        let mut axes = vec![width as i64, height as i64];
-        if images.len() > 1 {
-            axes.push(images.len() as i64);
-        }
         self.header.set(Card::NAxis {
-            value: axes.len() as i64,
+            value: shape.len() as i64,
             comment: None,
         });
+
         // A leftover NAXISn from a larger array would contradict NAXIS, so every
         // one of them goes before the new set is written.
         self.header
             .remove_prefixed(crate::header::card_keys::PREFIX_NAXIS_N);
 
-        for (index, length) in axes.iter().enumerate() {
+        for (index, length) in shape.iter().enumerate() {
             self.header.set(Card::NAxisN {
                 index,
-                value: *length,
+                value: *length as i64,
                 comment: None,
             });
         }
@@ -172,21 +197,19 @@ impl ImageHDU for SliceImageHDU {
             return 0;
         }
 
+        if self.is_compressed() {
+            return self.header.compressed_plane_count();
+        }
+
         self.header.image_plane_count()
     }
 
     fn images_width(&self) -> u32 {
-        self.header
-            .naxis_n(0)
-            .and_then(|width| u32::try_from(width).ok())
-            .unwrap_or(0)
+        self.dimensions().0
     }
 
     fn images_height(&self) -> u32 {
-        self.header
-            .naxis_n(1)
-            .and_then(|height| u32::try_from(height).ok())
-            .unwrap_or(0)
+        self.dimensions().1
     }
 
     fn images_bayer_pattern(&self) -> Option<BayerPattern> {
@@ -206,6 +229,10 @@ impl ImageHDU for SliceImageHDU {
     fn read_image(&self, index: usize) -> Result<Option<Image>, Box<dyn Error + Send + Sync>> {
         if index >= self.image_count() {
             return Ok(None);
+        }
+
+        if self.is_compressed() {
+            return Ok(Some(self.read_compressed()?));
         }
 
         let bytes = self.image_bytes(index).to_vec();
@@ -254,49 +281,44 @@ impl ImageHDU for SliceImageHDU {
         Ok(())
     }
 
-    fn set_raw_images_u8(
+    fn set_raw_array_u8(
         &mut self,
-        width: u32,
-        height: u32,
-        images: &[&[u8]],
+        shape: &[u32],
+        values: &[u8],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        self.set_raw_images(Bitpix::U8, width, height, images, u8::to_be_bytes)
+        self.set_raw_array(Bitpix::U8, shape, values, u8::to_be_bytes)
     }
 
-    fn set_raw_images_i16(
+    fn set_raw_array_i16(
         &mut self,
-        width: u32,
-        height: u32,
-        images: &[&[i16]],
+        shape: &[u32],
+        values: &[i16],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        self.set_raw_images(Bitpix::I16, width, height, images, i16::to_be_bytes)
+        self.set_raw_array(Bitpix::I16, shape, values, i16::to_be_bytes)
     }
 
-    fn set_raw_images_i32(
+    fn set_raw_array_i32(
         &mut self,
-        width: u32,
-        height: u32,
-        images: &[&[i32]],
+        shape: &[u32],
+        values: &[i32],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        self.set_raw_images(Bitpix::I32, width, height, images, i32::to_be_bytes)
+        self.set_raw_array(Bitpix::I32, shape, values, i32::to_be_bytes)
     }
 
-    fn set_raw_images_f32(
+    fn set_raw_array_f32(
         &mut self,
-        width: u32,
-        height: u32,
-        images: &[&[f32]],
+        shape: &[u32],
+        values: &[f32],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        self.set_raw_images(Bitpix::F32, width, height, images, f32::to_be_bytes)
+        self.set_raw_array(Bitpix::F32, shape, values, f32::to_be_bytes)
     }
 
-    fn set_raw_images_f64(
+    fn set_raw_array_f64(
         &mut self,
-        width: u32,
-        height: u32,
-        images: &[&[f64]],
+        shape: &[u32],
+        values: &[f64],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        self.set_raw_images(Bitpix::F64, width, height, images, f64::to_be_bytes)
+        self.set_raw_array(Bitpix::F64, shape, values, f64::to_be_bytes)
     }
 
     #[cfg(feature = "tokio")]
@@ -311,6 +333,20 @@ impl ImageHDU for SliceImageHDU {
         let width = self.images_width();
         if width == 0 {
             return Ok(None);
+        }
+
+        // A compressed image has to be put back together before any of it can
+        // be streamed.
+        if self.is_compressed() {
+            let image = self.read_compressed()?;
+            let normalised = image.normalized();
+
+            let pixels: Vec<_> = normalised
+                .enumerate_pixels()
+                .map(|(x, y, pixel)| (x, y, pixel[0]))
+                .collect();
+
+            return Ok(Some(stream::iter(pixels).boxed()));
         }
 
         let bitpix = self
@@ -339,7 +375,13 @@ impl ImageHDU for SliceImageHDU {
     }
 
     fn image_data_size(&self) -> u64 {
-        let Some(bitpix) = self.header.bitpix() else {
+        let bitpix = if self.is_compressed() {
+            self.header.compressed_bitpix()
+        } else {
+            self.header.bitpix()
+        };
+
+        let Some(bitpix) = bitpix else {
             return 0;
         };
 

@@ -76,6 +76,54 @@ pub trait ImageHDU: HDU + fmt::Debug + Send + Sync {
     /// Removes every image, leaving a header-only HDU.
     fn clear_images(&mut self) -> Result<(), Box<dyn Error + Send + Sync>>;
 
+    /// Replaces the data with an array of `shape`, given as raw 8-bit samples.
+    ///
+    /// `shape` is the NAXISn cards in order, fastest-varying axis first, so a
+    /// stack of three 640 by 480 images is `[640, 480, 3]`. Any number of axes
+    /// is allowed; [`set_raw_images_u8`] is the everyday two- and three-axis
+    /// form of the same thing.
+    ///
+    /// The header's BITPIX and NAXISn cards are brought into line with the data.
+    ///
+    /// [`set_raw_images_u8`]: ImageHDU::set_raw_images_u8
+    fn set_raw_array_u8(
+        &mut self,
+        shape: &[u32],
+        values: &[u8],
+    ) -> Result<(), Box<dyn Error + Send + Sync>>;
+
+    /// Replaces the data with an array of `shape`, given as raw signed 16-bit
+    /// samples.
+    fn set_raw_array_i16(
+        &mut self,
+        shape: &[u32],
+        values: &[i16],
+    ) -> Result<(), Box<dyn Error + Send + Sync>>;
+
+    /// Replaces the data with an array of `shape`, given as raw signed 32-bit
+    /// samples.
+    fn set_raw_array_i32(
+        &mut self,
+        shape: &[u32],
+        values: &[i32],
+    ) -> Result<(), Box<dyn Error + Send + Sync>>;
+
+    /// Replaces the data with an array of `shape`, given as raw single precision
+    /// samples.
+    fn set_raw_array_f32(
+        &mut self,
+        shape: &[u32],
+        values: &[f32],
+    ) -> Result<(), Box<dyn Error + Send + Sync>>;
+
+    /// Replaces the data with an array of `shape`, given as raw double precision
+    /// samples.
+    fn set_raw_array_f64(
+        &mut self,
+        shape: &[u32],
+        values: &[f64],
+    ) -> Result<(), Box<dyn Error + Send + Sync>>;
+
     /// Replaces the images with raw 8-bit samples, `width` by `height` each.
     ///
     /// The header's BITPIX and NAXISn cards are brought into line with them.
@@ -84,35 +132,45 @@ pub trait ImageHDU: HDU + fmt::Debug + Send + Sync {
         width: u32,
         height: u32,
         images: &[&[u8]],
-    ) -> Result<(), Box<dyn Error + Send + Sync>>;
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        set_planes(self, width, height, images, Self::set_raw_array_u8)
+    }
     /// Replaces the images with raw signed 16-bit samples.
     fn set_raw_images_i16(
         &mut self,
         width: u32,
         height: u32,
         images: &[&[i16]],
-    ) -> Result<(), Box<dyn Error + Send + Sync>>;
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        set_planes(self, width, height, images, Self::set_raw_array_i16)
+    }
     /// Replaces the images with raw signed 32-bit samples.
     fn set_raw_images_i32(
         &mut self,
         width: u32,
         height: u32,
         images: &[&[i32]],
-    ) -> Result<(), Box<dyn Error + Send + Sync>>;
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        set_planes(self, width, height, images, Self::set_raw_array_i32)
+    }
     /// Replaces the images with raw single precision samples.
     fn set_raw_images_f32(
         &mut self,
         width: u32,
         height: u32,
         images: &[&[f32]],
-    ) -> Result<(), Box<dyn Error + Send + Sync>>;
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        set_planes(self, width, height, images, Self::set_raw_array_f32)
+    }
     /// Replaces the images with raw double precision samples.
     fn set_raw_images_f64(
         &mut self,
         width: u32,
         height: u32,
         images: &[&[f64]],
-    ) -> Result<(), Box<dyn Error + Send + Sync>>;
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        set_planes(self, width, height, images, Self::set_raw_array_f64)
+    }
 
     /// Streams one image as `(x, y, value)` triples, normalised to `0.0..=1.0`.
     #[cfg(feature = "tokio")]
@@ -122,6 +180,54 @@ pub trait ImageHDU: HDU + fmt::Debug + Send + Sync {
     ) -> Result<Option<NormalisedImageStream<'_>>, Box<dyn Error + Send + Sync>>;
     /// How many bytes one image occupies.
     fn image_data_size(&self) -> u64;
+}
+
+/// Lays a set of equally sized planes out as one array and stores it.
+///
+/// This is what the `set_raw_images_*` methods are: a shape of two axes for one
+/// image and three for a stack of them.
+fn set_planes<T: Copy, S: ImageHDU + ?Sized>(
+    hdu: &mut S,
+    width: u32,
+    height: u32,
+    images: &[&[T]],
+    set: impl FnOnce(&mut S, &[u32], &[T]) -> Result<(), Box<dyn Error + Send + Sync>>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    if images.is_empty() {
+        return hdu.clear_images();
+    }
+
+    let pixels = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or("Image dimensions overflow the address space")?;
+
+    // Checked here rather than left to the shape, so that a ragged set says
+    // which image is the wrong size.
+    for (index, image) in images.iter().enumerate() {
+        if image.len() != pixels {
+            return Err(format!(
+                "Image {} has {} pixels, but a {}x{} image has {}",
+                index,
+                image.len(),
+                width,
+                height,
+                pixels
+            )
+            .into());
+        }
+    }
+
+    let mut shape = vec![width, height];
+    if images.len() > 1 {
+        shape.push(images.len() as u32);
+    }
+
+    let values: Vec<T> = images
+        .iter()
+        .flat_map(|image| image.iter().copied())
+        .collect();
+
+    set(hdu, &shape, &values)
 }
 
 fn get_raw_data_from_image<
