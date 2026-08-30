@@ -16,17 +16,40 @@ use std::error::Error;
 
 type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
 
+/// Builds a compressed-image extension whose tiles are 16-bit words rather than
+/// bytes, which is how PLIO stores its instruction lists.
+fn compressed_image_of_words(cards: &[(&str, &str)], tiles: &[&[u16]]) -> Vec<u8> {
+    let bytes: Vec<Vec<u8>> = tiles
+        .iter()
+        .map(|tile| tile.iter().flat_map(|word| word.to_be_bytes()).collect())
+        .collect();
+    let tiles: Vec<&[u8]> = bytes.iter().map(|tile| tile.as_slice()).collect();
+
+    // `1PI` counts 16-bit elements, so the descriptors hold half as many as
+    // there are bytes.
+    compressed_image_with(cards, &tiles, "'1PI'", 2)
+}
+
 /// Builds a compressed-image extension whose rows hold `tiles`.
 ///
 /// The tile bytes go in a variable length array column, which is how the
 /// convention stores them: a descriptor of count and heap offset in the row, and
 /// the bytes themselves in the heap after the last row.
 fn compressed_image(cards: &[(&str, &str)], tiles: &[&[u8]]) -> Vec<u8> {
+    compressed_image_with(cards, tiles, "'1PB'", 1)
+}
+
+fn compressed_image_with(
+    cards: &[(&str, &str)],
+    tiles: &[&[u8]],
+    form: &str,
+    bytes_per_element: usize,
+) -> Vec<u8> {
     let mut rows = Vec::new();
     let mut heap = Vec::new();
 
     for tile in tiles {
-        rows.extend_from_slice(&(tile.len() as i32).to_be_bytes());
+        rows.extend_from_slice(&((tile.len() / bytes_per_element) as i32).to_be_bytes());
         rows.extend_from_slice(&(heap.len() as i32).to_be_bytes());
         heap.extend_from_slice(tile);
     }
@@ -56,7 +79,7 @@ fn compressed_image(cards: &[(&str, &str)], tiles: &[&[u8]]) -> Vec<u8> {
         ("PCOUNT", pcount.as_str()),
         ("GCOUNT", "1"),
         ("TFIELDS", "1"),
-        ("TFORM1", "'1PB'"),
+        ("TFORM1", form),
         ("TTYPE1", "'COMPRESSED_DATA'"),
         ("ZIMAGE", "T"),
     ];
@@ -407,6 +430,76 @@ async fn a_compressed_image_streams_its_pixels() -> TestResult {
     assert_eq!(pixels[0].1, 0);
     assert_eq!(pixels[47].0, 7);
     assert_eq!(pixels[47].1, 5);
+
+    Ok(())
+}
+
+#[test]
+fn a_plio_compressed_mask_is_read() -> TestResult {
+    // PLIO stores masks, and its instruction lists are 16-bit words rather than
+    // bytes. These were produced by cfitsio: three zeros, three of the high
+    // value, two zeros.
+    let tile: &[u16] = &[
+        0x0000, 0x0007, 0xff9c, 0x000a, 0x0000, 0x0000, 0x0000, 0x0003, 0x4003, 0x0002,
+    ];
+
+    let file = compressed_image_of_words(
+        &[
+            ("ZBITPIX", "32"),
+            ("ZNAXIS", "2"),
+            ("ZNAXIS1", "8"),
+            ("ZNAXIS2", "1"),
+            ("ZTILE1", "8"),
+            ("ZTILE2", "1"),
+            ("ZCMPTYPE", "'PLIO_1'"),
+        ],
+        &[tile],
+    );
+
+    let fits = open("compressed-plio.fits", &file)?;
+    let image = image_hdu(&fits)
+        .read_image(0)?
+        .expect("the extension holds an image");
+
+    let Image::I32(data) = &image else {
+        panic!("expected a 32-bit image, got {image:?}");
+    };
+    assert_eq!(data.raw(), &[0, 0, 0, 1, 1, 1, 0, 0]);
+
+    Ok(())
+}
+
+#[test]
+fn a_plio_mask_with_several_levels_is_read() -> TestResult {
+    // A segmentation mask rather than a boolean one, which exercises the
+    // instructions that move the high value.
+    let tile: &[u16] = &[
+        0x0000, 0x0007, 0xff9c, 0x000d, 0x0000, 0x0000, 0x0000, 0x5002, 0x6001, 0x6001, 0x2002,
+        0x0002, 0x4002,
+    ];
+
+    let file = compressed_image_of_words(
+        &[
+            ("ZBITPIX", "32"),
+            ("ZNAXIS", "2"),
+            ("ZNAXIS1", "8"),
+            ("ZNAXIS2", "1"),
+            ("ZTILE1", "8"),
+            ("ZTILE2", "1"),
+            ("ZCMPTYPE", "'PLIO_1'"),
+        ],
+        &[tile],
+    );
+
+    let fits = open("compressed-plio-levels.fits", &file)?;
+    let image = image_hdu(&fits)
+        .read_image(0)?
+        .expect("the extension holds an image");
+
+    let Image::I32(data) = &image else {
+        panic!("expected a 32-bit image, got {image:?}");
+    };
+    assert_eq!(data.raw(), &[0, 1, 2, 3, 0, 0, 5, 5]);
 
     Ok(())
 }

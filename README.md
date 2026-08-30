@@ -239,7 +239,8 @@ enabled so the `serde`, `tokio` and `gzip` parts are visible.
 | WCS helpers                   | ✅      | `CDi_j`, `PCi_j` and `CDELTn`/`CROTAn`; linear and `TAN` |
 | CHECKSUM and DATASUM          | ✅      | Written on save; `checksum::verify` checks an HDU        |
 | Random groups                 | ✅      | `group_count` and `read_group`, with PSCALn and PZEROn   |
-| Compressed image extensions   | ✅      | Read as images; `RICE_1`, `GZIP_1`, `GZIP_2`, `NOCOMPRESS` |
+| Compressed image extensions   | ✅      | `RICE_1`, `PLIO_1`, `GZIP_1`, `GZIP_2`, `NOCOMPRESS`     |
+| `HCOMPRESS_1` images          | 🚧     | Reports itself as unimplemented rather than guessing     |
 
 ## License
 

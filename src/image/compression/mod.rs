@@ -4,6 +4,7 @@
 //! each one, and stores the results as the rows of a binary table. The table's
 //! header describes the image it stands for with keywords beginning `Z`.
 
+pub(crate) mod plio;
 pub(crate) mod rice;
 
 use crate::bin_table::{BinTable, Value};
@@ -94,11 +95,15 @@ fn decode_tile(
     count: usize,
     bitpix: Bitpix,
 ) -> Result<Vec<f64>, Box<dyn Error + Send + Sync>> {
-    let compressed = bytes_of(row, COMPRESSED_DATA)?;
+    let compressed = bytes_of(row, COMPRESSED_DATA).unwrap_or_default();
+
+    // PLIO's instructions arrive as words rather than bytes, so an empty byte
+    // reading does not mean the tile is empty.
+    let is_empty = compressed.is_empty() && words_of(row, COMPRESSED_DATA)?.is_empty();
 
     // A tile the coder could not shrink is stored plainly instead, in one of two
     // fallback columns.
-    let values = if compressed.is_empty() {
+    let values = if is_empty {
         if let Some(plain) = bytes_of(row, UNCOMPRESSED_DATA)
             .ok()
             .filter(|b| !b.is_empty())
@@ -112,7 +117,7 @@ fn decode_tile(
             from_be_bytes(&gunzip(&gzipped)?, bitpix, count)
         }
     } else {
-        decompress(header, &compressed, count, bitpix)?
+        decompress(header, row, &compressed, count, bitpix)?
     };
 
     // A floating point image is compressed by quantising it to integers, which
@@ -136,6 +141,7 @@ fn decode_tile(
 /// Runs a tile's bytes through whichever algorithm ZCMPTYPE names.
 fn decompress(
     header: &Header,
+    row: &crate::bin_table::Row,
     compressed: &[u8],
     count: usize,
     bitpix: Bitpix,
@@ -164,6 +170,13 @@ fn decompress(
                 .collect())
         }
 
+        // PLIO stores its instructions as 16-bit words rather than as bytes, so
+        // the column holds them already decoded.
+        "PLIO_1" => Ok(plio::decompress(&words_of(row, COMPRESSED_DATA)?, count)?
+            .into_iter()
+            .map(|value| value as f64)
+            .collect()),
+
         "GZIP_1" => Ok(from_be_bytes(&gunzip(compressed)?, bitpix, count)),
 
         // GZIP_2 gathers the first byte of every value, then the second, and so
@@ -182,8 +195,8 @@ fn decompress(
         // Guessing at an algorithm would produce an image made of noise, which
         // is worse than saying plainly that it is not implemented.
         other => Err(From::from(format!(
-            "Compressed images using {} are not supported yet; this crate reads RICE_1, GZIP_1, \
-             GZIP_2 and NOCOMPRESS",
+            "Compressed images using {} are not supported yet; this crate reads RICE_1, PLIO_1, \
+             GZIP_1, GZIP_2 and NOCOMPRESS",
             other
         ))),
     }
@@ -256,6 +269,28 @@ fn to_be_bytes(pixels: &[f64], bitpix: Bitpix) -> Vec<u8> {
     }
 
     bytes
+}
+
+/// A column's 16-bit words, which is how a PLIO instruction list arrives.
+///
+/// The column may be typed as 16-bit integers or as bytes; a byte column is read
+/// two at a time, most significant first, as FITS stores them.
+fn words_of(
+    row: &crate::bin_table::Row,
+    name: &str,
+) -> Result<Vec<u16>, Box<dyn Error + Send + Sync>> {
+    Ok(match row.get(name)? {
+        Some(Value::I16(values)) => values.into_iter().map(|value| value as u16).collect(),
+        Some(Value::U16(values)) => values,
+        Some(Value::U8(bytes)) | Some(Value::Bit { bytes, .. }) => bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+            .collect(),
+        Some(Value::Null) | None => Vec::new(),
+        Some(other) => {
+            return Err(format!("Column {} holds {:?}, not 16-bit words", name, other).into());
+        }
+    })
 }
 
 /// A column's bytes, or empty when the row has no such column.
