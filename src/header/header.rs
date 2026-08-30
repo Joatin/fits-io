@@ -17,6 +17,45 @@ pub(crate) const CARD_NUM_BYTES: usize = 80;
 /// sections are both padded up to a whole number of them.
 pub(crate) const BLOCK_NUM_BYTES: usize = 2880;
 
+/// Joins each value that was split across CONTINUE cards back into one card.
+///
+/// The convention marks a value as continuing by ending it with `&`, which the
+/// next CONTINUE card carries on from. Left unjoined, a long value reads as
+/// whatever fitted on its first card, `&` and all.
+fn join_continuations(cards: Vec<Card>) -> Vec<Card> {
+    let mut joined: Vec<Card> = Vec::with_capacity(cards.len());
+
+    for card in cards {
+        let Card::Continuation { string, comment } = &card else {
+            joined.push(card);
+            continue;
+        };
+
+        // A continuation only belongs to a card whose value said it was coming.
+        let continues = joined
+            .last_mut()
+            .and_then(Card::string_value_mut)
+            .filter(|value| value.ends_with('&'));
+
+        let Some(value) = continues else {
+            joined.push(card);
+            continue;
+        };
+
+        value.pop();
+        value.push_str(string.as_deref().unwrap_or_default());
+
+        // The comment for the whole value rides on the last continuation.
+        if let Some(comment) = comment
+            && let Some(last) = joined.last_mut()
+        {
+            last.set_comment(comment.clone());
+        }
+    }
+
+    joined
+}
+
 /// Whether a keyword describes the table a compressed image is stored in, rather
 /// than the image itself.
 ///
@@ -74,11 +113,36 @@ const BLANK_CHECKSUM: &str = "0000000000000000";
 #[derive(Clone, Default)]
 pub struct Header {
     cards: Vec<Card>,
+    /// How many bytes this header occupied in the file it was read from.
+    ///
+    /// Joining a continued value takes several cards down to one, so the card
+    /// count no longer says how far the data section is from the start of the
+    /// header. A header built in memory has no such history and is measured
+    /// from its cards.
+    bytes_in_file: Option<usize>,
 }
 
 impl Header {
+    /// How many cards this header writes out as, which is more than it holds
+    /// when a value is long enough to need continuing.
+    fn written_card_count(&self) -> usize {
+        let cards: usize = self
+            .cards
+            .iter()
+            .filter(|card| **card != Card::End)
+            .map(|card| card.to_cards().len())
+            .sum();
+
+        // `to_bytes` always writes an END card, whether or not one is held.
+        cards + 1
+    }
+
     pub(crate) fn bytes_len(&self) -> usize {
-        let num_bytes = self.cards.len() * CARD_NUM_BYTES;
+        if let Some(bytes) = self.bytes_in_file {
+            return bytes;
+        }
+
+        let num_bytes = self.written_card_count() * CARD_NUM_BYTES;
         let num_off_bytes = BLOCK_NUM_BYTES - (num_bytes % BLOCK_NUM_BYTES);
         if num_off_bytes == BLOCK_NUM_BYTES {
             num_bytes
@@ -1242,6 +1306,7 @@ impl Header {
                 .filter(|card| !describes_the_table(&card.key()))
                 .cloned()
                 .collect(),
+            bytes_in_file: None,
         };
 
         header.remove_prefixed(card_keys::PREFIX_NAXIS_N);
@@ -1356,7 +1421,9 @@ impl Header {
             if card == &Card::End {
                 break;
             }
-            bytes.extend_from_slice(&card.to_bytes());
+            for written in card.to_cards() {
+                bytes.extend_from_slice(&written);
+            }
         }
 
         bytes.extend_from_slice(&Card::End.to_bytes());
@@ -1569,6 +1636,8 @@ impl Header {
 
         Self {
             cards: mandatory.iter().cloned().chain(rest.cloned()).collect(),
+            // A header being written out is measured by what it writes.
+            bytes_in_file: None,
         }
     }
 
@@ -1646,7 +1715,20 @@ impl Header {
         let cards = Self::read_all_cards(reader)?;
 
         if let Some(Card::End) = cards.last() {
-            Ok(Some(Self { cards }))
+            let bytes_in_file = {
+                let bytes = cards.len() * CARD_NUM_BYTES;
+                let over = bytes % BLOCK_NUM_BYTES;
+                if over == 0 {
+                    bytes
+                } else {
+                    bytes + BLOCK_NUM_BYTES - over
+                }
+            };
+
+            Ok(Some(Self {
+                cards: join_continuations(cards),
+                bytes_in_file: Some(bytes_in_file),
+            }))
         } else {
             Ok(None)
         }

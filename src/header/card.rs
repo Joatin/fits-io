@@ -1358,7 +1358,7 @@ impl Card {
             Card::BayerPattern { .. } => card_keys::BAYERPAT.to_string(),
             Card::Value { name, .. } => name.to_string(),
             Card::Continuation { .. } => "CONTINUE".to_string(),
-            Card::Hierarch { .. } => "HIERARCH".to_string(),
+            Card::Hierarch { name, .. } => name.to_string(),
             Card::Space => "".to_string(),
             Card::Undefined(_) => "".to_string(),
             Card::CoordinateDeltaN { index, .. } => {
@@ -1452,12 +1452,45 @@ fn parse_card_index(key: &str, prefix: &str) -> Result<usize, Box<dyn Error + Se
         .ok_or_else(|| format!("Card keyword {} is not a valid 1-based index", key).into())
 }
 
-fn parse_continuation(_buf: &[u8; 80]) -> Result<Card, Box<dyn Error + Send + Sync>> {
-    Ok(Card::Undefined("".into()))
+/// Parses a CONTINUE card, which carries the next piece of a string too long
+/// for one card.
+///
+/// A continuation has no `=`: the string simply starts after the keyword, and
+/// the comment for the whole value may be attached to the last of them.
+fn parse_continuation(buf: &[u8; 80]) -> Result<Card, Box<dyn Error + Send + Sync>> {
+    let (text, comment) = split_value_and_comment(&buf[8..])?;
+
+    let string = if text.starts_with('\'') {
+        Some(parse_string(text)?)
+    } else {
+        None
+    };
+
+    Ok(Card::Continuation { string, comment })
 }
 
-fn parse_hierarch(_buf: &[u8; 80]) -> Result<Card, Box<dyn Error + Send + Sync>> {
-    Ok(Card::Undefined("".into()))
+/// Parses a HIERARCH card, which carries a keyword that the usual eight columns
+/// cannot hold.
+///
+/// The name runs from after the keyword to the `=`, and is a series of words
+/// which this keeps single-spaced so that the same keyword always reads the same
+/// way.
+fn parse_hierarch(buf: &[u8; 80]) -> Result<Card, Box<dyn Error + Send + Sync>> {
+    let text = std::str::from_utf8(&buf[8..])?;
+
+    let (name, value) = text
+        .split_once('=')
+        .ok_or("A HIERARCH card has no = separating its keyword from its value")?;
+
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.is_empty() {
+        return Err("A HIERARCH card has no keyword".into());
+    }
+
+    Ok(Card::Hierarch {
+        name,
+        value: parse_value(value.as_bytes())?,
+    })
 }
 
 fn parse_value(buf: &[u8]) -> Result<Value, Box<dyn Error + Send + Sync>> {
@@ -1619,6 +1652,17 @@ impl Card {
             // it was read, so that reading and writing a file leaves it alone.
             Card::Undefined(text) => text.clone(),
 
+            Card::Hierarch { name, value } => {
+                format!("HIERARCH {} = {}", name, unquoted(value))
+            }
+
+            // A continuation is normally written by the card it belongs to;
+            // one standing on its own is written back as it was read.
+            Card::Continuation { string, comment } => with_comment(
+                format!("CONTINUE  '{}'", string.clone().unwrap_or_default()),
+                comment.as_deref(),
+            ),
+
             card => format_value_card(&card.key(), &Value::from(card)),
         };
 
@@ -1627,6 +1671,201 @@ impl Card {
             *slot = byte;
         }
         bytes
+    }
+
+    /// The string this card holds, so that a continuation can be appended to
+    /// it.
+    ///
+    /// Only the string-valued cards can be continued, which is what the long
+    /// value convention is for. A keyword this does not know about simply will
+    /// not join its continuations, rather than joining them wrongly.
+    pub(crate) fn string_value_mut(&mut self) -> Option<&mut String> {
+        match self {
+            Card::Author { value, .. }
+            | Card::BUnit { value, .. }
+            | Card::CoordinateAxisNameN { value, .. }
+            | Card::Creator { value, .. }
+            | Card::ExtensionName { value, .. }
+            | Card::GuideCam { value, .. }
+            | Card::Instrument { value, .. }
+            | Card::Object { value, .. }
+            | Card::Observer { value, .. }
+            | Card::Origin { value, .. }
+            | Card::ParameterTypeN { value, .. }
+            | Card::Reference { value, .. }
+            | Card::TableDimensionsN { value, .. }
+            | Card::TableDisplayFormatN { value, .. }
+            | Card::TableFormatN { value, .. }
+            | Card::TableTypeN { value, .. }
+            | Card::TableUnitN { value, .. }
+            | Card::Telescope { value, .. } => Some(value),
+
+            Card::Value {
+                value: Value::String { value, .. },
+                ..
+            }
+            | Card::Hierarch {
+                value: Value::String { value, .. },
+                ..
+            } => Some(value),
+
+            _ => None,
+        }
+    }
+
+    /// Replaces this card's comment, for the string cards a continuation can
+    /// carry one for.
+    pub(crate) fn set_comment(&mut self, text: String) {
+        let slot = match self {
+            Card::Author { comment, .. }
+            | Card::BUnit { comment, .. }
+            | Card::CoordinateAxisNameN { comment, .. }
+            | Card::Creator { comment, .. }
+            | Card::ExtensionName { comment, .. }
+            | Card::GuideCam { comment, .. }
+            | Card::Instrument { comment, .. }
+            | Card::Object { comment, .. }
+            | Card::Observer { comment, .. }
+            | Card::Origin { comment, .. }
+            | Card::ParameterTypeN { comment, .. }
+            | Card::Reference { comment, .. }
+            | Card::TableDimensionsN { comment, .. }
+            | Card::TableDisplayFormatN { comment, .. }
+            | Card::TableFormatN { comment, .. }
+            | Card::TableTypeN { comment, .. }
+            | Card::TableUnitN { comment, .. }
+            | Card::Telescope { comment, .. } => comment,
+
+            Card::Value {
+                value: Value::String { comment, .. },
+                ..
+            }
+            | Card::Hierarch {
+                value: Value::String { comment, .. },
+                ..
+            } => comment,
+
+            _ => return,
+        };
+
+        *slot = Some(text);
+    }
+
+    /// Renders this card as the cards it occupies in a header.
+    ///
+    /// Almost every card is one card. A string value too long to fit, or one
+    /// whose comment will not fit beside it, is written as a first card ending
+    /// in `&` followed by CONTINUE cards — the convention FITS uses for values
+    /// longer than a card can hold.
+    pub fn to_cards(&self) -> Vec<[u8; CARD_NUM_BYTES]> {
+        // A HIERARCH card is laid out by hand, and a continuation belongs to the
+        // card that produced it.
+        if matches!(self, Card::Hierarch { .. } | Card::Continuation { .. }) {
+            return vec![self.to_bytes()];
+        }
+
+        let Value::String { value, comment } = Value::from(self) else {
+            return vec![self.to_bytes()];
+        };
+
+        let escaped = value.replace('\'', "''");
+
+        // `KEYWORD = '` and the closing quote account for twelve columns.
+        let room = CARD_NUM_BYTES - 12;
+        let comment_room = comment.as_ref().map(|comment| comment.len() + 3);
+
+        if escaped.len() <= room
+            && comment_room
+                .is_none_or(|needed| escaped.len().max(8) + 12 + needed <= CARD_NUM_BYTES)
+        {
+            return vec![self.to_bytes()];
+        }
+
+        // Every card but the last needs a column for the `&` that says more
+        // follows.
+        let mut chunks = chunk(&escaped, room - 1);
+
+        // A comment with nowhere to sit gets a continuation of its own.
+        if let Some(needed) = comment_room {
+            let last = chunks.last().map(String::len).unwrap_or(0);
+            if last + 12 + needed > CARD_NUM_BYTES {
+                chunks.push(String::new());
+            }
+        }
+
+        let last = chunks.len() - 1;
+
+        chunks
+            .into_iter()
+            .enumerate()
+            .map(|(index, text)| {
+                let more = index < last;
+                let comment = (index == last).then_some(comment.as_deref()).flatten();
+
+                pad(&if index == 0 {
+                    with_comment(
+                        format!("{:<8}= '{}{}'", self.key(), text, mark(more)),
+                        comment,
+                    )
+                } else {
+                    with_comment(format!("CONTINUE  '{}{}'", text, mark(more)), comment)
+                })
+            })
+            .collect()
+    }
+}
+
+/// Splits `text` into pieces of at most `room` bytes, on character boundaries.
+fn chunk(text: &str, room: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut rest = text;
+
+    while !rest.is_empty() {
+        let mut at = room.min(rest.len());
+        while at > 0 && !rest.is_char_boundary(at) {
+            at -= 1;
+        }
+
+        let (head, tail) = rest.split_at(at.max(1).min(rest.len()));
+        chunks.push(head.to_string());
+        rest = tail;
+    }
+
+    if chunks.is_empty() {
+        chunks.push(String::new());
+    }
+
+    chunks
+}
+
+fn mark(more: bool) -> &'static str {
+    if more { "&" } else { "" }
+}
+
+/// Adds a comment to a card if there is room for it.
+fn with_comment(card: String, comment: Option<&str>) -> String {
+    match comment {
+        Some(comment) if card.len() + 3 + comment.len() <= CARD_NUM_BYTES => {
+            format!("{} / {}", card, comment)
+        }
+        _ => card,
+    }
+}
+
+fn pad(text: &str) -> [u8; CARD_NUM_BYTES] {
+    let mut bytes = [b' '; CARD_NUM_BYTES];
+    for (slot, byte) in bytes.iter_mut().zip(text.bytes()) {
+        *slot = byte;
+    }
+    bytes
+}
+
+/// A value as it appears after the `= ` of a HIERARCH card, which is not laid
+/// out in the fixed columns.
+fn unquoted(value: &Value) -> String {
+    match value {
+        Value::String { value, .. } => format!("'{}'", value.replace('\'', "''")),
+        other => other.value_to_string(),
     }
 }
 

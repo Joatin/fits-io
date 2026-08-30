@@ -228,7 +228,7 @@ enabled so the `serde`, `tokio` and `gzip` parts are visible.
 | Unsigned columns              | ✅      | The TZEROn convention, at all four integer widths        |
 | Multidimensional columns      | ✅      | TDIMn read and written, nesting as deep as it says       |
 | Undefined image pixels        | ✅      | BLANK reads as NaN rather than as black                  |
-| Header read                   | ✅      |                                                          |
+| Header read                   | ✅      | `CONTINUE` long values and `HIERARCH` keywords included  |
 | Header write                  | ✅      | Mandatory cards filled in and ordered as the standard asks |
 | Image write                   | ✅      | Any number of axes, then `save` or `to_vec`              |
 | Table write                   | ✅      | `set_table` / `set_rows`, for both table kinds           |

@@ -150,8 +150,12 @@ impl From<Card> for Value {
                 comment,
             },
             Card::Value { value, .. } => value,
-            Card::Continuation { .. } => Value::Undefined,
-            Card::Hierarch { .. } => Value::Undefined,
+            // A continuation carries a piece of the string its own card began.
+            Card::Continuation { string, comment } => match string {
+                Some(value) => Value::String { value, comment },
+                None => Value::Undefined,
+            },
+            Card::Hierarch { value, .. } => value,
             Card::Space => Value::Undefined,
             Card::Undefined(_) => Value::Undefined,
             Card::TableFormatN { value, comment, .. } => Value::String { value, comment },
