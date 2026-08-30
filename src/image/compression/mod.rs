@@ -4,6 +4,7 @@
 //! each one, and stores the results as the rows of a binary table. The table's
 //! header describes the image it stands for with keywords beginning `Z`.
 
+pub(crate) mod hcompress;
 pub(crate) mod plio;
 pub(crate) mod rice;
 
@@ -177,6 +178,26 @@ fn decompress(
             .map(|value| value as f64)
             .collect()),
 
+        "HCOMPRESS_1" => {
+            // SMOOTH asks the decompressor to soften the artefacts that lossy
+            // compression leaves. Ignoring it would hand back an image that
+            // differs from what the file asked for.
+            let smooth = header.compression_parameter("SMOOTH").unwrap_or(0) != 0;
+
+            let (values, rows, columns) = hcompress::decompress(compressed, smooth)?;
+
+            if rows * columns < count {
+                return Err(format!(
+                    "An HCOMPRESS tile holds {} values but the header describes {}",
+                    rows * columns,
+                    count
+                )
+                .into());
+            }
+
+            Ok(values.into_iter().map(|value| value as f64).collect())
+        }
+
         "GZIP_1" => Ok(from_be_bytes(&gunzip(compressed)?, bitpix, count)),
 
         // GZIP_2 gathers the first byte of every value, then the second, and so
@@ -196,7 +217,7 @@ fn decompress(
         // is worse than saying plainly that it is not implemented.
         other => Err(From::from(format!(
             "Compressed images using {} are not supported yet; this crate reads RICE_1, PLIO_1, \
-             GZIP_1, GZIP_2 and NOCOMPRESS",
+             HCOMPRESS_1, GZIP_1, GZIP_2 and NOCOMPRESS",
             other
         ))),
     }

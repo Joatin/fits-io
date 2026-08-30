@@ -287,8 +287,8 @@ fn a_gzip_compressed_tile_is_read() -> TestResult {
 
 #[test]
 fn an_unsupported_algorithm_is_an_error_rather_than_noise() -> TestResult {
-    // Decoding HCOMPRESS as something else would produce a plausible-looking
-    // image made of nonsense.
+    // Decoding one algorithm as another would produce a plausible-looking image
+    // made of nonsense.
     let file = compressed_image(
         &[
             ("ZBITPIX", "16"),
@@ -297,17 +297,77 @@ fn an_unsupported_algorithm_is_an_error_rather_than_noise() -> TestResult {
             ("ZNAXIS2", "1"),
             ("ZTILE1", "4"),
             ("ZTILE2", "1"),
-            ("ZCMPTYPE", "'HCOMPRESS_1'"),
+            ("ZCMPTYPE", "'RICE_2'"),
         ],
         &[&[0x00, 0x01, 0x02, 0x03]],
     );
 
-    let fits = open("compressed-hcompress.fits", &file)?;
+    let fits = open("compressed-unknown.fits", &file)?;
     let error = image_hdu(&fits)
         .read_image(0)
-        .expect_err("HCOMPRESS is not implemented");
+        .expect_err("RICE_2 is not a thing");
 
-    assert!(error.to_string().contains("HCOMPRESS_1"), "got: {error}");
+    assert!(error.to_string().contains("RICE_2"), "got: {error}");
+
+    Ok(())
+}
+
+/// An 8x8 ramp from 0 to 63, compressed by cfitsio with HCOMPRESS at scale 0.
+const HCOMPRESS_GRADIENT: &[u8] = &[
+    0xdd, 0x99, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x09, 0x05, 0x00, 0xf6, 0x7f, 0xef, 0x39, 0xed, 0x7f, 0xde,
+    0xb3, 0xfe, 0xff, 0xbf, 0xef, 0xfb, 0xfe, 0xff, 0x83, 0xff, 0xff, 0xfe, 0x0f, 0xff, 0xff, 0xfb,
+    0xfe, 0xff, 0xbf, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+
+fn hcompress_cards(smooth: &'static str) -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("ZBITPIX", "32"),
+        ("ZNAXIS", "2"),
+        ("ZNAXIS1", "8"),
+        ("ZNAXIS2", "8"),
+        ("ZTILE1", "8"),
+        ("ZTILE2", "8"),
+        ("ZCMPTYPE", "'HCOMPRESS_1'"),
+        ("ZNAME1", "'SCALE'"),
+        ("ZVAL1", "0"),
+        ("ZNAME2", "'SMOOTH'"),
+        ("ZVAL2", smooth),
+    ]
+}
+
+#[test]
+fn an_hcompress_image_is_read() -> TestResult {
+    let file = compressed_image(&hcompress_cards("0"), &[HCOMPRESS_GRADIENT]);
+    let fits = open("compressed-hcompress.fits", &file)?;
+
+    let image = image_hdu(&fits)
+        .read_image(0)?
+        .expect("the extension holds an image");
+
+    assert_eq!(image.width(), 8);
+    assert_eq!(image.height(), 8);
+
+    let Image::I32(data) = &image else {
+        panic!("expected a 32-bit image, got {image:?}");
+    };
+    assert_eq!(data.raw(), &(0..64).collect::<Vec<i32>>());
+
+    Ok(())
+}
+
+#[test]
+fn an_hcompress_image_asking_to_be_smoothed_says_so() -> TestResult {
+    // Smoothing changes the pixels. Returning the unsmoothed image would be a
+    // different image from the one the file describes.
+    let file = compressed_image(&hcompress_cards("1"), &[HCOMPRESS_GRADIENT]);
+    let fits = open("compressed-hcompress-smooth.fits", &file)?;
+
+    let error = image_hdu(&fits)
+        .read_image(0)
+        .expect_err("smoothing is not implemented");
+
+    assert!(error.to_string().contains("smoothed"), "got: {error}");
 
     Ok(())
 }
