@@ -1,8 +1,8 @@
 [package]
 name = "fits-io"
 edition = "2024"
-version = "0.1.3"
-description = "A pure-Rust FITS file handling library inspired by CFITSIO, focused on safety, clarity, and performance."
+version = "0.2.0"
+description = "A pure-Rust FITS file reading and writing library inspired by CFITSIO, focused on safety, clarity, and performance."
 keywords = ["fits", "cfitsio", "astronomy", "healpix"]
 readme = "README.md"
 license = "Apache-2.0 OR MIT"
@@ -26,6 +26,10 @@ exclude = [
     "**/.DS_Store",
 ]
 
+[package.metadata.docs.rs]
+# Otherwise the serde, tokio and gzip parts of the API are missing from the docs.
+all-features = true
+
 [dependencies]
 image = { version = "0.25.6", default-features = false }
 futures = { version = "0.3.31", optional = true }
@@ -41,6 +45,7 @@ rayon = { version = "1.11.0", optional = true }
 
 [dev-dependencies]
 flate2 = "1.0"
+image = { version = "0.25.6", default-features = false }
 simplelog = "0.12.2"
 tokio = { version = "1.48.0", features = ["macros", "rt"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -50,24 +55,81 @@ rustversion = "1.0"
 
 [features]
 default = ["gzip", "tokio", "fs", "rayon"]
-gzip = ["dep:flate2", "fs"]
+# Decompressing a buffer needs no filesystem, so `gzip` does not imply `fs`;
+# reading a `.fits.gz` *file* needs both, which the test below declares.
+gzip = ["dep:flate2"]
 tokio = ["dep:tokio", "dep:futures", "dep:tokio-stream"]
 fs = []
 serde = ["dep:serde"]
 rayon = ["dep:rayon"]
 
+# Most tests read a file from disk, so they need the `fs` feature. Declaring that
+# here lets `cargo test --no-default-features` run the tests that do not, which
+# is what proves the in-memory reader stands on its own.
+[[example]]
+name = "open_file"
+required-features = ["fs"]
+
 [[test]]
-name = "open_bin_table"
+name = "ascii_table"
+required-features = ["fs"]
+
+[[test]]
+name = "ascii_rows"
 required-features = ["serde"]
+
+[[test]]
+name = "bin_table_columns"
+required-features = ["fs"]
+
+[[test]]
+name = "column_scaling"
+required-features = ["fs"]
 
 [[test]]
 name = "deserialize_rows"
-required-features = ["serde"]
+required-features = ["fs", "serde"]
 
 [[test]]
-name = "unimplemented_api"
-required-features = ["serde"]
+name = "extensions"
+required-features = ["fs"]
+
+[[test]]
+name = "malformed_files"
+required-features = ["fs"]
+
+[[test]]
+name = "open_bin_table"
+required-features = ["fs", "serde"]
 
 [[test]]
 name = "open_gzipped"
-required-features = ["gzip"]
+required-features = ["gzip", "fs"]
+
+[[test]]
+name = "read_image"
+required-features = ["fs"]
+
+[[test]]
+name = "reader_parity"
+required-features = ["fs"]
+
+[[test]]
+name = "stream_image"
+required-features = ["fs", "tokio"]
+
+[[test]]
+name = "stream_table"
+required-features = ["fs", "tokio"]
+
+[[test]]
+name = "world_coordinates"
+required-features = ["fs"]
+
+[[test]]
+name = "write_files"
+required-features = ["fs"]
+
+[[test]]
+name = "write_tables"
+required-features = ["serde"]

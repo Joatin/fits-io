@@ -1,3 +1,5 @@
+/// Whether `path` names something this crate will try to open, judged by its
+/// /// extension.
 pub fn is_fits_file(path: &std::path::Path) -> bool {
     if let Some(file_name) = path.file_name() {
         if let Some(file_name) = file_name.to_str() {

@@ -188,19 +188,22 @@ fn logical_columns_round_trip_true_and_false() -> TestResult {
 }
 
 #[test]
-fn a_table_declaring_a_variable_length_column_is_rejected() -> TestResult {
-    // The heap that holds the actual data is not read yet, so accepting the
-    // descriptor would hand back meaningless offsets.
-    let error = read_table(
-        "varlen.fits",
-        &[("data", "1PJ(4)"), ("after", "1J")],
-        &[0; 12],
-    )
-    .expect_err("variable length array columns are not supported");
+fn a_variable_length_column_takes_only_its_descriptor_from_the_row() -> TestResult {
+    // Only the 8-byte descriptor sits in the row; the values it points at live
+    // in the heap. Getting that width wrong misaligns every following column,
+    // so the check is that `after` still reads correctly.
+    let mut data = Vec::new();
+    data.extend_from_slice(&0_i32.to_be_bytes()); // empty array: count
+    data.extend_from_slice(&0_i32.to_be_bytes()); // and offset
+    data.extend_from_slice(&7_i32.to_be_bytes()); // after
+
+    let table = read_table("varlen.fits", &[("data", "1PJ(4)"), ("after", "1J")], &data)?;
+
+    let row = table.row(0).expect("the table has one row");
 
     assert!(
-        error.to_string().contains("not supported yet"),
-        "got: {error}"
+        matches!(row.get("after")?, Some(Value::I32(ref v)) if v == &[7]),
+        "the column after a variable length array must still line up"
     );
 
     Ok(())

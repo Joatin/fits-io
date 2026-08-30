@@ -16,6 +16,7 @@ pub struct ImageData<T: Primitive> {
 }
 
 impl<T: Primitive> ImageData<T> {
+    /// Builds an image from its pixels and the normaliser for them.
     pub fn from_data(
         width: usize,
         height: usize,

@@ -1,7 +1,9 @@
+use crate::ascii_table::AsciiColumnFormat;
 use crate::header::card::Card;
+use crate::header::card_keys;
 use crate::header::extension_type::ExtensionType;
 use crate::header::value::Value;
-use crate::header::{BayerPattern, Bitpix, ImageType, TableColumnFormat};
+use crate::header::{BayerPattern, Bitpix, ImageType, TableColumnFormat, TableNullValue};
 use crate::util::ReadSeek;
 use chrono::{DateTime, Utc};
 use std::error::Error;
@@ -9,12 +11,22 @@ use std::fmt::Formatter;
 use std::io::Read;
 use std::{fmt, vec};
 
-const CARD_NUM_BYTES: usize = 80;
+pub(crate) const CARD_NUM_BYTES: usize = 80;
 
 /// FITS files are laid out in blocks of this many bytes; headers and data
 /// sections are both padded up to a whole number of them.
-const BLOCK_NUM_BYTES: usize = 2880;
+pub(crate) const BLOCK_NUM_BYTES: usize = 2880;
 
+/// What a CHECKSUM card holds while the checksum that will replace it is being
+/// computed.
+///
+/// ASCII zeros, not spaces: the encoded value carries an ASCII-zero offset in
+/// every one of its sixteen characters, so a placeholder of zeros is what makes
+/// swapping it for the real value change the sum by exactly that value. Spaces
+/// would leave the result short by the difference.
+const BLANK_CHECKSUM: &str = "0000000000000000";
+
+/// A FITS header: the cards that describe an HDU and its data.
 #[derive(Clone, Default)]
 pub struct Header {
     cards: Vec<Card>,
@@ -31,6 +43,7 @@ impl Header {
         }
     }
 
+    /// The AUTHOR card: who prepared the data.
     pub fn author(&self) -> Option<&str> {
         self.cards.iter().find_map(|card| {
             if let Card::Author { value, .. } = card {
@@ -41,11 +54,11 @@ impl Header {
         })
     }
 
-    /// The BITPIX card.
+    /// The BITPIX card: the type of the values in the data section.
     ///
-    /// BITPIX is mandatory, so this returns `Some` for any header that passed
-    /// [`Header::validate_primary`] or [`Header::validate_extension`]. It returns
-    /// `None` for a header that was built by hand and left incomplete.
+    /// BITPIX is mandatory, and a header lacking it is rejected when the file is
+    /// opened, so this returns `Some` for any header read from a file. It is
+    /// `None` only for a header built by hand and left incomplete.
     pub fn bitpix(&self) -> Option<Bitpix> {
         self.cards.iter().find_map(|card| {
             if let Card::Bitpix { value, .. } = card {
@@ -56,6 +69,10 @@ impl Header {
         })
     }
 
+    /// The BLANK card: the raw value that stands for an undefined pixel.
+    ///
+    /// The standard defines it only for the integer BITPIX types; a floating point
+    /// array says the same thing with a NaN.
     pub fn blank(&self) -> Option<i64> {
         self.cards.iter().find_map(|card| {
             if let Card::Blank { value, .. } = card {
@@ -66,6 +83,7 @@ impl Header {
         })
     }
 
+    /// The BLOCKED card, a deprecated hint about the file's block size.
     pub fn blocked(&self) -> Option<bool> {
         self.cards.iter().find_map(|card| {
             if let Card::Blocked { value, .. } = card {
@@ -76,6 +94,9 @@ impl Header {
         })
     }
 
+    /// The BSCALE card: the factor a raw array value is multiplied by.
+    ///
+    /// See [`Header::bscale_or_default`] for the standard's default of 1.
     pub fn bscale(&self) -> Option<f64> {
         self.cards.iter().find_map(|card| {
             if let Card::BScale { value, .. } = card {
@@ -94,6 +115,7 @@ impl Header {
         self.bscale().unwrap_or(1.0)
     }
 
+    /// The BUNIT card: the physical unit the array's values are in.
     pub fn bunit(&self) -> Option<&str> {
         self.cards.iter().find_map(|card| {
             if let Card::BUnit { value, .. } = card {
@@ -104,6 +126,9 @@ impl Header {
         })
     }
 
+    /// The BZERO card: the offset added to a scaled array value.
+    ///
+    /// See [`Header::bzero_or_default`] for the standard's default of 0.
     pub fn bzero(&self) -> Option<f64> {
         self.cards.iter().find_map(|card| {
             if let Card::BZero { value, .. } = card {
@@ -122,6 +147,7 @@ impl Header {
         self.bzero().unwrap_or(0.0)
     }
 
+    /// The DATAMAX card: the largest physical value in the array.
     pub fn data_max(&self) -> Option<f64> {
         self.cards.iter().find_map(|card| {
             if let Card::DataMax { value, .. } = card {
@@ -132,6 +158,7 @@ impl Header {
         })
     }
 
+    /// The DATAMIN card: the smallest physical value in the array.
     pub fn data_min(&self) -> Option<f64> {
         self.cards.iter().find_map(|card| {
             if let Card::DataMin { value, .. } = card {
@@ -142,6 +169,7 @@ impl Header {
         })
     }
 
+    /// The DATE card: when the file was written.
     pub fn date(&self) -> Option<&DateTime<Utc>> {
         self.cards.iter().find_map(|card| {
             if let Card::Date { value, .. } = card {
@@ -152,6 +180,7 @@ impl Header {
         })
     }
 
+    /// The DATE-OBS card: when the observation was made.
     pub fn date_observed(&self) -> Option<&DateTime<Utc>> {
         self.cards.iter().find_map(|card| {
             if let Card::DateObserved { value, .. } = card {
@@ -162,6 +191,7 @@ impl Header {
         })
     }
 
+    /// The EPOCH card, which EQUINOX supersedes.
     pub fn epoch(&self) -> Option<f64> {
         self.cards.iter().find_map(|card| {
             if let Card::Epoch { value, .. } = card {
@@ -172,6 +202,7 @@ impl Header {
         })
     }
 
+    /// The EQUINOX card: the epoch of the coordinate system, in years.
     pub fn equinox(&self) -> Option<f64> {
         self.cards.iter().find_map(|card| {
             if let Card::Equinox { value, .. } = card {
@@ -182,6 +213,7 @@ impl Header {
         })
     }
 
+    /// The EXTEND card: whether extensions may follow the primary HDU.
     pub fn extend(&self) -> Option<bool> {
         self.cards.iter().find_map(|card| {
             if let Card::Extend { value, .. } = card {
@@ -192,6 +224,7 @@ impl Header {
         })
     }
 
+    /// The EXTLEVEL card: this extension's level in a hierarchy of them.
     pub fn extension_level(&self) -> Option<i64> {
         self.cards.iter().find_map(|card| {
             if let Card::ExtensionLevel { value, .. } = card {
@@ -202,6 +235,7 @@ impl Header {
         })
     }
 
+    /// The EXTNAME card: this extension's name.
     pub fn extension_name(&self) -> Option<&str> {
         self.cards.iter().find_map(|card| {
             if let Card::ExtensionName { value, .. } = card {
@@ -212,6 +246,7 @@ impl Header {
         })
     }
 
+    /// The EXTVER card: this extension's version.
     pub fn extension_version(&self) -> Option<i64> {
         self.cards.iter().find_map(|card| {
             if let Card::ExtensionVersion { value, .. } = card {
@@ -222,6 +257,9 @@ impl Header {
         })
     }
 
+    /// The GCOUNT card: how many groups the data section holds.
+    ///
+    /// One for everything but a random-groups HDU.
     pub fn group_count(&self) -> Option<i64> {
         self.cards.iter().find_map(|card| {
             if let Card::GroupCount { value, .. } = card {
@@ -232,6 +270,9 @@ impl Header {
         })
     }
 
+    /// The GROUPS card: whether this HDU uses the random-groups convention.
+    ///
+    /// See [`Header::is_random_groups`], which also checks the axis that marks it.
     pub fn groups(&self) -> Option<bool> {
         self.cards.iter().find_map(|card| {
             if let Card::Groups { value, .. } = card {
@@ -242,6 +283,7 @@ impl Header {
         })
     }
 
+    /// The INSTRUME card: the instrument the data came from.
     pub fn instrument(&self) -> Option<&str> {
         self.cards.iter().find_map(|card| {
             if let Card::Instrument { value, .. } = card {
@@ -252,11 +294,11 @@ impl Header {
         })
     }
 
-    /// The NAXIS card, i.e. the number of data axes.
+    /// The NAXIS card: how many axes the data section has.
     ///
-    /// NAXIS is mandatory, so this returns `Some` for any header that passed
-    /// [`Header::validate_primary`] or [`Header::validate_extension`]. It returns
-    /// `None` for a header that was built by hand and left incomplete.
+    /// NAXIS is mandatory, and a header lacking it is rejected when the file is
+    /// opened, so this returns `Some` for any header read from a file. It is
+    /// `None` only for a header built by hand and left incomplete.
     pub fn naxis(&self) -> Option<i64> {
         self.cards.iter().find_map(|card| {
             if let Card::NAxis { value, .. } = card {
@@ -267,6 +309,7 @@ impl Header {
         })
     }
 
+    /// The OBJECT card: what was observed.
     pub fn object(&self) -> Option<&str> {
         self.cards.iter().find_map(|card| {
             if let Card::Object { value, .. } = card {
@@ -277,6 +320,7 @@ impl Header {
         })
     }
 
+    /// The OBSERVER card: who made the observation.
     pub fn observer(&self) -> Option<&str> {
         self.cards.iter().find_map(|card| {
             if let Card::Observer { value, .. } = card {
@@ -287,6 +331,7 @@ impl Header {
         })
     }
 
+    /// The ORIGIN card: the organisation that wrote the file.
     pub fn origin(&self) -> Option<&str> {
         self.cards.iter().find_map(|card| {
             if let Card::Origin { value, .. } = card {
@@ -297,6 +342,9 @@ impl Header {
         })
     }
 
+    /// The PCOUNT card: how many extra values follow the array.
+    ///
+    /// This is a binary table's heap, or the parameters of a random-groups HDU.
     pub fn pcount(&self) -> Option<i64> {
         self.cards.iter().find_map(|card| {
             if let Card::ParameterCount { value, .. } = card {
@@ -307,6 +355,7 @@ impl Header {
         })
     }
 
+    /// The REFERENC card: a publication describing the data.
     pub fn reference(&self) -> Option<&str> {
         self.cards.iter().find_map(|card| {
             if let Card::Reference { value, .. } = card {
@@ -317,6 +366,9 @@ impl Header {
         })
     }
 
+    /// The SIMPLE card: whether the file conforms to the FITS standard.
+    ///
+    /// Only a primary header carries it.
     pub fn simple(&self) -> Option<bool> {
         self.cards.iter().find_map(|card| {
             if let Card::Simple { value, .. } = card {
@@ -327,6 +379,7 @@ impl Header {
         })
     }
 
+    /// The TELESCOP card: the telescope the data came from.
     pub fn telescope(&self) -> Option<&str> {
         self.cards.iter().find_map(|card| {
             if let Card::Telescope { value, .. } = card {
@@ -337,6 +390,7 @@ impl Header {
         })
     }
 
+    /// The TFIELDS card: how many columns the table has.
     pub fn table_fields(&self) -> Option<i64> {
         self.cards.iter().find_map(|card| {
             if let Card::TableFields { value, .. } = card {
@@ -347,6 +401,8 @@ impl Header {
         })
     }
 
+    /// The THEAP card: where a binary table's heap starts, as a byte offset
+    /// into the data section.
     pub fn table_heap(&self) -> Option<i64> {
         self.cards.iter().find_map(|card| {
             if let Card::TableHeap { value, .. } = card {
@@ -357,6 +413,9 @@ impl Header {
         })
     }
 
+    /// The XTENSION card: which kind of extension this is.
+    ///
+    /// `None` for a primary header, which is not an extension.
     pub fn extension(&self) -> Option<ExtensionType> {
         self.cards.iter().find_map(|card| {
             if let Card::Xtension { value, .. } = card {
@@ -367,6 +426,10 @@ impl Header {
         })
     }
 
+    /// The FOCALLEN card: the telescope's focal length.
+    ///
+    /// A widespread convention among astrophotography software rather than part of
+    /// the standard, as are the other camera keywords near it.
     pub fn focal_length(&self) -> Option<f64> {
         self.cards.iter().find_map(|card| {
             if let Card::FocalLength { value, .. } = card {
@@ -377,6 +440,7 @@ impl Header {
         })
     }
 
+    /// The EXPTIME card: how long the exposure lasted.
     pub fn exposure_time(&self) -> Option<std::time::Duration> {
         self.cards.iter().find_map(|card| {
             if let Card::ExposureTime { value, .. } = card {
@@ -387,6 +451,7 @@ impl Header {
         })
     }
 
+    /// The CCD-TEMP card: the sensor's temperature, in degrees Celsius.
     pub fn ccd_temperature(&self) -> Option<f64> {
         self.cards.iter().find_map(|card| {
             if let Card::CCDTemperature { value, .. } = card {
@@ -397,6 +462,9 @@ impl Header {
         })
     }
 
+    /// The BAYERPAT card: the colour filter layout over the sensor.
+    ///
+    /// `None` for a monochrome sensor, or one that did not record the pattern.
     pub fn bayer_pattern(&self) -> Option<BayerPattern> {
         self.cards.iter().find_map(|card| {
             if let Card::BayerPattern { value, .. } = card {
@@ -407,6 +475,7 @@ impl Header {
         })
     }
 
+    /// The CREATOR card: the software that wrote the file.
     pub fn creator(&self) -> Option<&str> {
         self.cards.iter().find_map(|card| {
             if let Card::Creator { value, .. } = card {
@@ -417,6 +486,7 @@ impl Header {
         })
     }
 
+    /// The XORGSUBF card: where a subframe starts on the sensor, horizontally.
     pub fn subframe_x_position_in_binned_pixels(&self) -> Option<i64> {
         self.cards.iter().find_map(|card| {
             if let Card::SubframeXPositionInBinnedPixels { value, .. } = card {
@@ -427,6 +497,7 @@ impl Header {
         })
     }
 
+    /// The YORGSUBF card: where a subframe starts on the sensor, vertically.
     pub fn subframe_y_position_in_binned_pixels(&self) -> Option<i64> {
         self.cards.iter().find_map(|card| {
             if let Card::SubframeYPositionInBinnedPixels { value, .. } = card {
@@ -437,6 +508,7 @@ impl Header {
         })
     }
 
+    /// The XBINNING card: how many sensor pixels were binned into one, horizontally.
     pub fn binned_pixels_x(&self) -> Option<i64> {
         self.cards.iter().find_map(|card| {
             if let Card::BinnedPixelsX { value, .. } = card {
@@ -447,6 +519,7 @@ impl Header {
         })
     }
 
+    /// The YBINNING card: how many sensor pixels were binned into one, vertically.
     pub fn binned_pixels_y(&self) -> Option<i64> {
         self.cards.iter().find_map(|card| {
             if let Card::BinnedPixelsY { value, .. } = card {
@@ -457,6 +530,7 @@ impl Header {
         })
     }
 
+    /// The CCDXBIN card, another spelling of XBINNING.
     pub fn ccd_binned_pixels_x(&self) -> Option<i64> {
         self.cards.iter().find_map(|card| {
             if let Card::CCDBinnedPixelsX { value, .. } = card {
@@ -467,6 +541,7 @@ impl Header {
         })
     }
 
+    /// The CCDYBIN card, another spelling of YBINNING.
     pub fn ccd_binned_pixels_y(&self) -> Option<i64> {
         self.cards.iter().find_map(|card| {
             if let Card::CCDBinnedPixelsY { value, .. } = card {
@@ -477,6 +552,7 @@ impl Header {
         })
     }
 
+    /// The XPIXSZ card: the width of a pixel in microns, binning included.
     pub fn pixel_size_x_with_binning_in_microns(&self) -> Option<f64> {
         self.cards.iter().find_map(|card| {
             if let Card::PixelSizeXWithBinningInMicrons { value, .. } = card {
@@ -487,6 +563,7 @@ impl Header {
         })
     }
 
+    /// The YPIXSZ card: the height of a pixel in microns, binning included.
     pub fn pixel_size_y_with_binning_in_microns(&self) -> Option<f64> {
         self.cards.iter().find_map(|card| {
             if let Card::PixelSizeYWithBinningInMicrons { value, .. } = card {
@@ -497,6 +574,7 @@ impl Header {
         })
     }
 
+    /// The IMAGETYP card: whether this is a light, dark, flat or bias frame.
     pub fn image_type(&self) -> Option<&ImageType> {
         self.cards.iter().find_map(|card| {
             if let Card::ImageType { value, .. } = card {
@@ -507,6 +585,7 @@ impl Header {
         })
     }
 
+    /// The EXPOSURE card, another spelling of EXPTIME.
     pub fn exposure(&self) -> Option<std::time::Duration> {
         self.cards.iter().find_map(|card| {
             if let Card::Exposure { value, .. } = card {
@@ -517,6 +596,7 @@ impl Header {
         })
     }
 
+    /// The RA card: the right ascension the telescope was pointed at.
     pub fn ra(&self) -> Option<f64> {
         self.cards.iter().find_map(|card| {
             if let Card::Ra { value, .. } = card {
@@ -527,6 +607,7 @@ impl Header {
         })
     }
 
+    /// The DEC card: the declination the telescope was pointed at.
     pub fn dec(&self) -> Option<f64> {
         self.cards.iter().find_map(|card| {
             if let Card::Dec { value, .. } = card {
@@ -537,6 +618,7 @@ impl Header {
         })
     }
 
+    /// The GUIDECAM card: the guide camera in use.
     pub fn guide_cam(&self) -> Option<&str> {
         self.cards.iter().find_map(|card| {
             if let Card::GuideCam { value, .. } = card {
@@ -547,6 +629,7 @@ impl Header {
         })
     }
 
+    /// The FOCUSPOS card: where the focuser was.
     pub fn focus_position(&self) -> Option<i64> {
         self.cards.iter().find_map(|card| {
             if let Card::FocusPosition { value, .. } = card {
@@ -557,6 +640,7 @@ impl Header {
         })
     }
 
+    /// The SITELONG card: the observing site's longitude.
     pub fn site_longitude(&self) -> Option<f64> {
         self.cards.iter().find_map(|card| {
             if let Card::SiteLongitude { value, .. } = card {
@@ -567,6 +651,7 @@ impl Header {
         })
     }
 
+    /// The SITELAT card: the observing site's latitude.
     pub fn site_latitude(&self) -> Option<f64> {
         self.cards.iter().find_map(|card| {
             if let Card::SiteLatitude { value, .. } = card {
@@ -577,6 +662,7 @@ impl Header {
         })
     }
 
+    /// The IMAGEW card: the image's width, as the writing software recorded it.
     pub fn image_width(&self) -> Option<i64> {
         self.cards.iter().find_map(|card| {
             if let Card::ImageWidth { value, .. } = card {
@@ -587,6 +673,7 @@ impl Header {
         })
     }
 
+    /// The IMAGEH card: the image's height, as the writing software recorded it.
     pub fn image_height(&self) -> Option<i64> {
         self.cards.iter().find_map(|card| {
             if let Card::ImageHeight { value, .. } = card {
@@ -597,6 +684,8 @@ impl Header {
         })
     }
 
+    /// The CDELTn card for axis `index`: how far the world coordinate moves
+    /// per pixel.
     pub fn coordinate_delta(&self, index: usize) -> Option<f64> {
         self.cards.iter().find_map(|card| {
             if let Card::CoordinateDeltaN {
@@ -610,6 +699,8 @@ impl Header {
         })
     }
 
+    /// The CROTAn card for axis `index`: the rotation between the pixel and
+    /// world axes, in degrees.
     pub fn coordinate_rotation(&self, index: usize) -> Option<f64> {
         self.cards.iter().find_map(|card| {
             if let Card::CoordinateRotationN {
@@ -623,6 +714,8 @@ impl Header {
         })
     }
 
+    /// The CRPIXn card for axis `index`: the pixel that the reference value
+    /// sits at, counting from 1.
     pub fn coordinate_reference_pixel(&self, index: usize) -> Option<f64> {
         self.cards.iter().find_map(|card| {
             if let Card::CoordinateReferencePixelN {
@@ -636,6 +729,8 @@ impl Header {
         })
     }
 
+    /// The CRVALn card for axis `index`: the world coordinate at the
+    /// reference pixel.
     pub fn coordinate_value_at_pixel(&self, index: usize) -> Option<f64> {
         self.cards.iter().find_map(|card| {
             if let Card::CoordinateValueAtPixelN {
@@ -649,6 +744,8 @@ impl Header {
         })
     }
 
+    /// The CTYPEn card for axis `index`: what the axis measures, and the
+    /// projection it uses.
     pub fn coordinate_axis_name(&self, index: usize) -> Option<&str> {
         self.cards.iter().find_map(|card| {
             if let Card::CoordinateAxisNameN {
@@ -662,6 +759,9 @@ impl Header {
         })
     }
 
+    /// The NAXISn card for axis `index`: how long that axis is.
+    ///
+    /// `index` counts from 0, so NAXIS1 is `naxis_n(0)`.
     pub fn naxis_n(&self, index: usize) -> Option<i64> {
         self.cards.iter().find_map(|card| {
             if let Card::NAxisN {
@@ -675,6 +775,7 @@ impl Header {
         })
     }
 
+    /// The PSCALn card for group parameter `index`.
     pub fn parameter_scaling_factor(&self, index: usize) -> Option<f64> {
         self.cards.iter().find_map(|card| {
             if let Card::ParameterScalingFactorN {
@@ -688,6 +789,7 @@ impl Header {
         })
     }
 
+    /// The PTYPEn card for group parameter `index`: what it measures.
     pub fn parameter_type(&self, index: usize) -> Option<&str> {
         self.cards.iter().find_map(|card| {
             if let Card::ParameterTypeN {
@@ -701,6 +803,7 @@ impl Header {
         })
     }
 
+    /// The PZEROn card for group parameter `index`.
     pub fn parameter_scaling_zero_point(&self, index: usize) -> Option<f64> {
         self.cards.iter().find_map(|card| {
             if let Card::ParameterScalingZeroPointN {
@@ -714,6 +817,8 @@ impl Header {
         })
     }
 
+    /// The TBCOLn card for column `index`: where the column starts within an
+    /// ASCII table's row, counting from 1.
     pub fn table_column(&self, index: usize) -> Option<i64> {
         self.cards.iter().find_map(|card| {
             if let Card::TableColumnN {
@@ -727,6 +832,8 @@ impl Header {
         })
     }
 
+    /// The TDIMn card for column `index`: the shape of a multidimensional
+    /// column, as written.
     pub fn table_dimensions(&self, index: usize) -> Option<&str> {
         self.cards.iter().find_map(|card| {
             if let Card::TableDimensionsN {
@@ -740,6 +847,7 @@ impl Header {
         })
     }
 
+    /// The TDISPn card for column `index`: how the column is best displayed.
     pub fn table_display_format(&self, index: usize) -> Option<&str> {
         self.cards.iter().find_map(|card| {
             if let Card::TableDisplayFormatN {
@@ -753,19 +861,23 @@ impl Header {
         })
     }
 
-    pub fn table_null_value(&self, index: usize) -> Option<&str> {
+    /// The TNULLn card for column `index`: the value that marks an undefined
+    /// entry in that column.
+    pub fn table_null_value(&self, index: usize) -> Option<&TableNullValue> {
         self.cards.iter().find_map(|card| {
             if let Card::TableNullValueN {
                 value, index: idx, ..
             } = card
                 && index == *idx
             {
-                return Some(value.as_str());
+                return Some(value);
             };
             None
         })
     }
 
+    /// The TSCALn card for column `index`: the factor a stored entry is
+    /// multiplied by.
     pub fn table_scaling_factor(&self, index: usize) -> Option<f64> {
         self.cards.iter().find_map(|card| {
             if let Card::TableScalingFactorN {
@@ -779,6 +891,7 @@ impl Header {
         })
     }
 
+    /// The TTYPEn card for column `index`: the column's name.
     pub fn table_column_type(&self, index: usize) -> Option<&str> {
         self.cards.iter().find_map(|card| {
             if let Card::TableTypeN {
@@ -792,19 +905,37 @@ impl Header {
         })
     }
 
-    pub fn table_column_format(&self, index: usize) -> Option<TableColumnFormat> {
+    /// The TFORMn card for column `index`, exactly as written.
+    pub fn table_format(&self, index: usize) -> Option<&str> {
         self.cards.iter().find_map(|card| {
             if let Card::TableFormatN {
                 value, index: idx, ..
             } = card
                 && index == *idx
             {
-                return Some(*value);
+                return Some(value.as_str());
             };
             None
         })
     }
 
+    /// The TFORMn card for column `index`, read as a binary table format.
+    ///
+    /// `None` when the card is absent or does not name a binary table format,
+    /// which is the case for every ASCII table; use
+    /// [`Header::ascii_column_format`] for those.
+    pub fn table_column_format(&self, index: usize) -> Option<TableColumnFormat> {
+        TableColumnFormat::try_from(self.table_format(index)?.to_string()).ok()
+    }
+
+    /// The TFORMn card for column `index`, read as an ASCII table format.
+    ///
+    /// `None` when the card is absent or does not name an ASCII table format.
+    pub fn ascii_column_format(&self, index: usize) -> Option<AsciiColumnFormat> {
+        AsciiColumnFormat::try_from(self.table_format(index)?.to_string()).ok()
+    }
+
+    /// The TUNITn card for column `index`: the column's physical unit.
     pub fn table_unit(&self, index: usize) -> Option<&str> {
         self.cards.iter().find_map(|card| {
             if let Card::TableUnitN {
@@ -818,6 +949,7 @@ impl Header {
         })
     }
 
+    /// The TZEROn card for column `index`: the offset added after scaling.
     pub fn table_scaling_zero_point(&self, index: usize) -> Option<f64> {
         self.cards.iter().find_map(|card| {
             if let Card::TableScalingZeroPointN {
@@ -844,6 +976,12 @@ impl Header {
 
     /// Size of this HDU's data section in bytes, excluding block padding.
     ///
+    /// This is the standard's
+    /// `BITPIX/8 * GCOUNT * (PCOUNT + NAXIS1 * ... * NAXISn)`. PCOUNT matters
+    /// for binary tables: it is the size of the heap that follows the rows, and
+    /// leaving it out puts the *next* HDU at the wrong offset in every file
+    /// whose table has variable length array columns.
+    ///
     /// Returns 0 for a header that declares no data, and also for an incomplete
     /// header — a header missing BITPIX, NAXIS or one of its NAXISn cards cannot
     /// describe a data section. [`Header::validate_primary`] and
@@ -858,7 +996,7 @@ impl Header {
             return 0;
         }
 
-        let mut bytes = bitpix.byte_size();
+        let mut elements: usize = 1;
         for axis in 0..number_of_axis {
             // NAXISn is untrusted input: a negative or absurd length must not
             // overflow the running product.
@@ -868,14 +1006,328 @@ impl Header {
             let Ok(length) = usize::try_from(length) else {
                 return 0;
             };
-            let Some(product) = bytes.checked_mul(length) else {
+            let Some(product) = elements.checked_mul(length) else {
                 return 0;
             };
-            bytes = product;
+            elements = product;
         }
+
+        // PCOUNT and GCOUNT are mandatory on extensions and absent from a
+        // conforming primary header, where they are 0 and 1.
+        let pcount = self.pcount().unwrap_or(0).max(0) as usize;
+        let gcount = self.group_count().unwrap_or(1).max(0) as usize;
+
+        let Some(bytes) = elements.checked_add(pcount) else {
+            return 0;
+        };
+        let Some(bytes) = bytes.checked_mul(gcount) else {
+            return 0;
+        };
+        let Some(bytes) = bytes.checked_mul(bitpix.byte_size()) else {
+            return 0;
+        };
+
         bytes
     }
 
+    /// Whether this HDU uses the random-groups convention.
+    ///
+    /// Such an HDU's data section is not an image but GCOUNT groups, each one a
+    /// run of PCOUNT parameters followed by an array. The convention is marked
+    /// by `GROUPS = T`, and by a first axis of length zero standing in for the
+    /// axis the groups occupy.
+    pub fn is_random_groups(&self) -> bool {
+        self.groups() == Some(true) && self.naxis_n(0) == Some(0)
+    }
+
+    /// How many values each group's array holds, for a random-groups HDU.
+    ///
+    /// The first axis is the placeholder that marks the convention, so the array
+    /// is the axes after it.
+    pub(crate) fn group_array_len(&self) -> usize {
+        let Some(axes) = self.naxis() else {
+            return 0;
+        };
+
+        let mut elements = 1_usize;
+        for axis in 1..axes.max(0) as usize {
+            let length = self.naxis_n(axis).unwrap_or(0).max(0) as usize;
+            let Some(product) = elements.checked_mul(length) else {
+                return 0;
+            };
+            elements = product;
+        }
+
+        elements
+    }
+
+    /// How many two-dimensional planes an image HDU's data section holds.
+    ///
+    /// The first two axes are the image; every axis beyond them multiplies the
+    /// number of images, so a NAXIS = 4 array with NAXIS3 = 2 and NAXIS4 = 3
+    /// holds six planes, not two. An HDU with fewer than two axes holds no
+    /// image at all.
+    pub(crate) fn image_plane_count(&self) -> usize {
+        let Some(axes) = self.naxis() else {
+            return 0;
+        };
+
+        if axes < 2 {
+            return 0;
+        }
+
+        let mut planes = 1_usize;
+        for axis in 2..axes as usize {
+            let length = self.naxis_n(axis).unwrap_or(0).max(0) as usize;
+
+            // A zero-length axis means no data at all, not "ignore this axis".
+            let Some(product) = planes.checked_mul(length) else {
+                return 0;
+            };
+            planes = product;
+        }
+
+        planes
+    }
+
+    /// Byte offset of a binary table's heap from the start of its data section.
+    ///
+    /// THEAP names it explicitly; a table without that card puts the heap
+    /// directly after the last row.
+    pub(crate) fn table_heap_offset(&self) -> usize {
+        if let Some(offset) = self.table_heap()
+            && let Ok(offset) = usize::try_from(offset)
+        {
+            return offset;
+        }
+
+        let rows = |axis| self.naxis_n(axis).unwrap_or(0).max(0) as usize;
+        rows(0).saturating_mul(rows(1))
+    }
+
+    /// Renders this header as the bytes it occupies in a file.
+    ///
+    /// The result is always a whole number of 2880-byte blocks, padded with
+    /// spaces, and always ends with an END card — a header without one is not a
+    /// header a reader can find the end of.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.bytes_len());
+
+        for card in &self.cards {
+            if card == &Card::End {
+                break;
+            }
+            bytes.extend_from_slice(&card.to_bytes());
+        }
+
+        bytes.extend_from_slice(&Card::End.to_bytes());
+
+        let padding = (BLOCK_NUM_BYTES - bytes.len() % BLOCK_NUM_BYTES) % BLOCK_NUM_BYTES;
+        bytes.resize(bytes.len() + padding, b' ');
+
+        bytes
+    }
+
+    /// Writes the DATASUM and CHECKSUM cards for an HDU whose data section is
+    /// `data`.
+    ///
+    /// CHECKSUM covers the whole HDU including its own card, so it cannot be
+    /// known until the header has been rendered. It is set to blanks here and
+    /// filled in by [`Header::checksummed_bytes`] once there is a header to sum.
+    pub(crate) fn set_checksum_placeholders(&mut self, data: &[u8]) {
+        self.set(Card::Value {
+            name: card_keys::DATASUM.to_string(),
+            value: Value::String {
+                value: crate::checksum::sum32(data, 0).to_string(),
+                comment: Some("checksum of the data section".into()),
+            },
+        });
+        self.set(Card::Value {
+            name: card_keys::CHECKSUM.to_string(),
+            value: Value::String {
+                value: BLANK_CHECKSUM.to_string(),
+                comment: Some("checksum of the whole HDU".into()),
+            },
+        });
+    }
+
+    /// This header rendered with a CHECKSUM that is correct for it and `data`.
+    ///
+    /// The card is written blank, the whole HDU is summed, and the card is then
+    /// filled in with the complement of that sum — so that summing the finished
+    /// HDU gives all ones. The blank value and the final one are the same width,
+    /// so filling it in does not move anything.
+    pub(crate) fn checksummed_bytes(&self, data: &[u8]) -> Vec<u8> {
+        let mut header = self.clone();
+        header.set_checksum_placeholders(data);
+
+        let blank = header.to_bytes();
+
+        let sum = crate::checksum::sum32(data, crate::checksum::sum32(&blank, 0));
+        let checksum = crate::checksum::encode(crate::checksum::complement(sum));
+
+        header.set(Card::Value {
+            name: card_keys::CHECKSUM.to_string(),
+            value: Value::String {
+                value: checksum,
+                comment: Some("checksum of the whole HDU".into()),
+            },
+        });
+
+        let bytes = header.to_bytes();
+        debug_assert_eq!(
+            bytes.len(),
+            blank.len(),
+            "filling in the checksum must not change the header's length"
+        );
+
+        bytes
+    }
+
+    /// This header with its mandatory cards present and in the order the FITS
+    /// standard requires.
+    ///
+    /// The standard is strict about the front of a header: a primary header
+    /// opens with SIMPLE, BITPIX, NAXIS and then one NAXISn per axis, and an
+    /// extension header opens with XTENSION and continues through PCOUNT and
+    /// GCOUNT. A reader is entitled to reject anything else, so a header that is
+    /// being written out is put in that order here rather than left however it
+    /// was assembled.
+    ///
+    /// Missing mandatory cards are filled in with the values the standard
+    /// defines: a header built from nothing has no SIMPLE card at all, and a
+    /// file written from one would not be readable.
+    ///
+    /// `extension` names the kind of extension this header belongs to, or
+    /// `None` for the primary header.
+    pub(crate) fn conformed(&self, extension: Option<ExtensionType>) -> Self {
+        let mut mandatory = Vec::new();
+
+        match extension {
+            None => mandatory.push(Card::Simple {
+                // A file this crate wrote conforms to the standard, so SIMPLE is
+                // true even if the header it came from said otherwise.
+                value: true,
+                comment: self.comment_for(card_keys::SIMPLE),
+            }),
+            Some(extension) => mandatory.push(Card::Xtension {
+                value: extension,
+                comment: self.comment_for(card_keys::XTENSION),
+            }),
+        }
+
+        mandatory.push(Card::Bitpix {
+            value: self.bitpix().unwrap_or(Bitpix::U8),
+            comment: self.comment_for(card_keys::BITPIX),
+        });
+
+        let axes = self.naxis().unwrap_or(0).max(0);
+        mandatory.push(Card::NAxis {
+            value: axes,
+            comment: self.comment_for(card_keys::NAXIS),
+        });
+
+        for axis in 0..axes as usize {
+            mandatory.push(Card::NAxisN {
+                index: axis,
+                value: self.naxis_n(axis).unwrap_or(0),
+                comment: self.comment_for(&format!("{}{}", card_keys::PREFIX_NAXIS_N, axis + 1)),
+            });
+        }
+
+        // PCOUNT and GCOUNT are mandatory on every extension and are not written
+        // in a conforming primary header.
+        if extension.is_some() {
+            mandatory.push(Card::ParameterCount {
+                value: self.pcount().unwrap_or(0),
+                comment: self.comment_for(card_keys::PCOUNT),
+            });
+            mandatory.push(Card::GroupCount {
+                value: self.group_count().unwrap_or(1),
+                comment: self.comment_for(card_keys::GCOUNT),
+            });
+        }
+
+        // A table's TFIELDS belongs immediately after GCOUNT.
+        if matches!(
+            extension,
+            Some(ExtensionType::BinTable | ExtensionType::AsciiTable)
+        ) {
+            mandatory.push(Card::TableFields {
+                value: self.table_fields().unwrap_or(0),
+                comment: self.comment_for(card_keys::TFIELDS),
+            });
+        }
+
+        let placed: Vec<String> = mandatory.iter().map(Card::key).collect();
+
+        // Everything else keeps the order it already had, minus the cards that
+        // have just been placed at the front and any END, which `to_bytes` adds.
+        let rest = self
+            .cards
+            .iter()
+            .filter(|card| **card != Card::End && !placed.contains(&card.key()));
+
+        Self {
+            cards: mandatory.iter().cloned().chain(rest.cloned()).collect(),
+        }
+    }
+
+    /// The comment on the existing card for `key`, so that rewriting a header
+    /// does not throw away what its cards said about themselves.
+    fn comment_for(&self, key: &str) -> Option<String> {
+        self.cards
+            .iter()
+            .find(|card| card.key() == key)
+            .and_then(|card| match Value::from(card) {
+                Value::Integer { comment, .. }
+                | Value::Float { comment, .. }
+                | Value::Logical { comment, .. }
+                | Value::String { comment, .. } => comment,
+                _ => None,
+            })
+    }
+
+    /// Replaces the card for `key`, or adds it before the END card.
+    ///
+    /// Writing an image means bringing BITPIX and the NAXISn cards into line
+    /// with the data, and those cards are already there in a header that was
+    /// read from a file.
+    pub(crate) fn set(&mut self, card: Card) {
+        let key = card.key();
+
+        if let Some(existing) = self.cards.iter_mut().find(|existing| existing.key() == key) {
+            *existing = card;
+            return;
+        }
+
+        match self.cards.iter().position(|card| card == &Card::End) {
+            Some(end) => self.cards.insert(end, card),
+            None => self.cards.push(card),
+        }
+    }
+
+    /// Removes every indexed card whose keyword starts with `prefix`, such as
+    /// every TFORMn.
+    ///
+    /// The index has to be there: `NAXIS` is not one of the `NAXISn` cards, and
+    /// removing it along with them would leave a header that no longer says how
+    /// many axes it has.
+    pub(crate) fn remove_prefixed(&mut self, prefix: &str) {
+        self.cards.retain(|card| {
+            let key = card.key();
+            let Some(index) = key.strip_prefix(prefix) else {
+                return true;
+            };
+
+            !(!index.is_empty() && index.chars().all(|c| c.is_ascii_digit()))
+        });
+    }
+
+    /// Every card with the keyword `key`, as raw values.
+    ///
+    /// Most keywords appear once, but COMMENT and HISTORY may repeat, and an
+    /// unrecognised keyword can appear as often as the writer liked.
     pub fn raw_card(&self, key: &str) -> Vec<Value> {
         self.cards
             .iter()

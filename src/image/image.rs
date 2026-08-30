@@ -3,12 +3,18 @@ use crate::image::{ImageData, Normalizer};
 use image::{ImageBuffer, Luma, Primitive, Rgb, RgbImage};
 use std::error::Error;
 
+/// One image, in whatever type its BITPIX card called for.
 #[derive(Debug, Clone)]
 pub enum Image {
+    /// A double precision image, from BITPIX -64.
     F64(ImageData<f64>),
+    /// A single precision image, from BITPIX -32.
     F32(ImageData<f32>),
+    /// A signed 32-bit image, from BITPIX 32.
     I32(ImageData<i32>),
+    /// A signed 16-bit image, from BITPIX 16.
     I16(ImageData<i16>),
+    /// An 8-bit image, from BITPIX 8.
     U8(ImageData<u8>),
 }
 
@@ -146,7 +152,7 @@ impl Image {
                 Ok(Image::F64(ImageData::<f64>::from_data(
                     width,
                     height,
-                    normalizer_for(header, bitpix, &image_data),
+                    normalizer_for(header, &image_data),
                     bayer_pattern,
                     image_data,
                 )?))
@@ -161,7 +167,7 @@ impl Image {
                 Ok(Image::F32(ImageData::<f32>::from_data(
                     width,
                     height,
-                    normalizer_for(header, bitpix, &image_data),
+                    normalizer_for(header, &image_data),
                     bayer_pattern,
                     image_data,
                 )?))
@@ -169,7 +175,7 @@ impl Image {
             Bitpix::U8 => Ok(Image::U8(ImageData::<u8>::from_data(
                 width,
                 height,
-                normalizer_for(header, bitpix, &data),
+                normalizer_for(header, &data),
                 bayer_pattern,
                 data,
             )?)),
@@ -183,7 +189,7 @@ impl Image {
                 Ok(Image::I16(ImageData::<i16>::from_data(
                     width,
                     height,
-                    normalizer_for(header, bitpix, &image_data),
+                    normalizer_for(header, &image_data),
                     bayer_pattern,
                     image_data,
                 )?))
@@ -198,7 +204,7 @@ impl Image {
                 Ok(Image::I32(ImageData::<i32>::from_data(
                     width,
                     height,
-                    normalizer_for(header, bitpix, &image_data),
+                    normalizer_for(header, &image_data),
                     bayer_pattern,
                     image_data,
                 )?))
@@ -213,18 +219,13 @@ impl Image {
 /// representable range of BITPIX — but adds a fallback the streaming path cannot
 /// use: a floating point image has no representable range, and here the whole
 /// array is in hand, so its actual extent can be measured.
-fn normalizer_for<T: Primitive>(header: &Header, bitpix: Bitpix, data: &[T]) -> Normalizer {
-    let zero_offset = header.bzero_or_default();
-    let scale = header.bscale_or_default();
-
-    if let (Some(minimum), Some(maximum)) = (header.data_min(), header.data_max()) {
-        return Normalizer::new(zero_offset, scale, minimum, maximum);
-    }
-
-    Normalizer::for_bitpix(bitpix, zero_offset, scale).unwrap_or_else(|| {
+fn normalizer_for<T: Primitive>(header: &Header, data: &[T]) -> Normalizer {
+    Normalizer::from_header(header).unwrap_or_else(|_| {
+        // `from_header` only fails for a floating point image with neither
+        // DATAMIN nor DATAMAX, and BLANK does not apply to those.
         Normalizer::from_samples(
-            zero_offset,
-            scale,
+            header.bzero_or_default(),
+            header.bscale_or_default(),
             data.iter().filter_map(|sample| sample.to_f64()),
         )
     })

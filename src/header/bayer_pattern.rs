@@ -3,9 +3,13 @@ use std::error::Error;
 /// The camera bayer pattern
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BayerPattern {
+    /// Red, green on the first row; green, blue on the second.
     RGGB,
+    /// Blue, green on the first row; green, red on the second.
     BGGR,
+    /// Green, red on the first row; blue, green on the second.
     GRBG,
+    /// Green, blue on the first row; red, green on the second.
     GBRG,
 }
 
@@ -13,9 +17,11 @@ pub enum BayerPattern {
 /// left of the 2x2 tile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SuperpixelOffsets {
+    /// Where the red pixel sits in the group.
     pub red: (u32, u32),
     /// The two green samples, which are averaged together.
     pub green: [(u32, u32); 2],
+    /// Where the blue pixel sits in the group.
     pub blue: (u32, u32),
 }
 

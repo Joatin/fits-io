@@ -1,15 +1,27 @@
-use crate::bin_table::{FieldDefinition, Row, Value};
+use crate::ascii_table::AsciiRow;
+use crate::bin_table::row_columns::RowColumns;
+use crate::bin_table::{Row, Value};
 use serde::Deserialize;
 use serde::de::{
     DeserializeSeed, Error, IntoDeserializer, MapAccess, SeqAccess, Unexpected, Visitor,
 };
 
-struct Deserializer<'de> {
-    row: &'de Row<'de>,
+struct Deserializer<'de, R: RowColumns> {
+    row: &'de R,
     field_offset: usize,
 }
 
+/// Deserialises one row of a binary table into `T`.
 pub fn from_bin_table_row<'a, T: Deserialize<'a>>(row: &'a Row) -> crate::Result<T> {
+    from_row(row)
+}
+
+/// Deserialises one row of an ASCII table into `T`.
+pub fn from_ascii_table_row<'a, T: Deserialize<'a>>(row: &'a AsciiRow) -> crate::Result<T> {
+    from_row(row)
+}
+
+fn from_row<'a, T: Deserialize<'a>, R: RowColumns>(row: &'a R) -> crate::Result<T> {
     let mut deserializer = Deserializer {
         row,
         field_offset: 0,
@@ -17,37 +29,29 @@ pub fn from_bin_table_row<'a, T: Deserialize<'a>>(row: &'a Row) -> crate::Result
     T::deserialize(&mut deserializer)
 }
 
-impl<'de> Deserializer<'de> {
-    /// The column this deserializer is currently positioned on.
-    fn column(&self) -> crate::Result<&'de FieldDefinition> {
-        self.row
-            .field_definitions
-            .get(self.field_offset)
-            .ok_or_else(|| {
-                crate::Error::custom(format!(
-                    "Column {} is past the end of a {} column table",
-                    self.field_offset,
-                    self.row.field_definitions.len()
-                ))
-            })
-    }
-
+impl<'de, R: RowColumns> Deserializer<'de, R> {
     fn name(&self) -> crate::Result<&'de str> {
-        Ok(self.column()?.2.as_str())
+        self.row.column_name(self.field_offset).ok_or_else(|| {
+            crate::Error::custom(format!(
+                "Column {} is past the end of a {} column table",
+                self.field_offset,
+                self.row.column_count()
+            ))
+        })
     }
 
     /// The decoded contents of the current column.
     fn value(&self) -> crate::Result<Value> {
-        self.row.get_at(self.field_offset)?.ok_or_else(|| {
+        self.row.value_at(self.field_offset)?.ok_or_else(|| {
             crate::Error::custom(format!("Column {} has no value", self.field_offset))
         })
     }
 
     fn invalid_type(&self, expected: &str) -> crate::Error {
         let format = self
-            .column()
-            .map(|column| format!("{:?}", column.0))
-            .unwrap_or_else(|_| "an unknown column".to_string());
+            .row
+            .column_description(self.field_offset)
+            .unwrap_or_else(|| "an unknown column".to_string());
 
         crate::Error::invalid_type(Unexpected::Other(&format), &expected)
     }
@@ -65,14 +69,17 @@ fn as_integer(value: &Value) -> Option<i128> {
         Value::U32(values) => values.first().map(|value| i128::from(*value)),
         Value::I32(values) => values.first().map(|value| i128::from(*value)),
         Value::I64(values) => values.first().map(|value| i128::from(*value)),
+        Value::U64(values) => values.first().map(|value| i128::from(*value)),
         // A complex value is a pair, not a scalar; it deserializes as a
-        // sequence of its components instead.
+        // sequence of its components instead. An undefined entry has no number
+        // to offer at all.
         Value::String(_)
         | Value::StringArray(_)
         | Value::F32(_)
         | Value::F64(_)
         | Value::C32(_)
-        | Value::M64(_) => None,
+        | Value::M64(_)
+        | Value::Null => None,
     }
 }
 
@@ -99,12 +106,15 @@ fn len(value: &Value) -> usize {
         Value::U32(values) => values.len(),
         Value::I32(values) => values.len(),
         Value::I64(values) => values.len(),
+        Value::U64(values) => values.len(),
         Value::F32(values) => values.len(),
         Value::F64(values) => values.len(),
         // Complex columns present as a flat run of components, so `1C` reads as
         // a two element sequence and `[f32; 2]` or `(f32, f32)` both work.
         Value::C32(values) => values.len() * 2,
         Value::M64(values) => values.len() * 2,
+        // An undefined entry has no elements to walk.
+        Value::Null => 0,
     }
 }
 
@@ -134,7 +144,7 @@ macro_rules! deserialize_integer {
     };
 }
 
-impl<'de> serde::de::Deserializer<'de> for &mut Deserializer<'de> {
+impl<'de, R: RowColumns> serde::de::Deserializer<'de> for &mut Deserializer<'de, R> {
     type Error = crate::Error;
 
     /// Deserializes the column as whatever its TFORMn says it is.
@@ -266,16 +276,17 @@ impl<'de> serde::de::Deserializer<'de> for &mut Deserializer<'de> {
         }
     }
 
-    /// Every column of a binary table row is present.
-    ///
-    /// FITS marks absent values with the TNULLn card rather than by omitting
-    /// them, which this deserializer does not yet interpret, so `Option<T>`
-    /// fields always see `Some`.
+    /// Every column of a binary table row is physically present, so "absent"
+    /// here means the column declares a TNULLn value and this entry is it.
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_some(self)
+        if self.value()?.is_null() {
+            visitor.visit_none()
+        } else {
+            visitor.visit_some(self)
+        }
     }
 
     fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -308,10 +319,22 @@ impl<'de> serde::de::Deserializer<'de> for &mut Deserializer<'de> {
     }
 
     /// Deserializes a column whose TFORMn repeat count is greater than one.
+    /// Deserializes the column as a sequence.
+    ///
+    /// A column with a TDIMn card holds a multidimensional array rather than a
+    /// flat run of values, and is presented as nested sequences so that a
+    /// `Vec<Vec<T>>` field sees the shape the card describes. TDIMn lists the
+    /// fastest-varying axis first, so its *last* axis is the outermost one here.
     fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
+        let shape = self.row.column_dimensions(self.field_offset);
+
+        if shape.len() > 1 {
+            return visitor.visit_seq(ShapedAccess::new(self.value()?, shape.to_vec()));
+        }
+
         visitor.visit_seq(ColumnAccess::new(self.value()?))
     }
 
@@ -419,6 +442,7 @@ impl ColumnAccess {
             Value::U32(values) => Value::U32(vec![*values.get(index)?]),
             Value::I32(values) => Value::I32(vec![*values.get(index)?]),
             Value::I64(values) => Value::I64(vec![*values.get(index)?]),
+            Value::U64(values) => Value::U64(vec![*values.get(index)?]),
             Value::C32(values) => {
                 let (real, imaginary) = values.get(index / 2)?;
                 Value::F32(vec![if index.is_multiple_of(2) {
@@ -437,6 +461,7 @@ impl ColumnAccess {
             }
             Value::F32(values) => Value::F32(vec![*values.get(index)?]),
             Value::F64(values) => Value::F64(vec![*values.get(index)?]),
+            Value::Null => return None,
         };
 
         Some(element)
@@ -455,7 +480,7 @@ impl<'de> SeqAccess<'de> for ColumnAccess {
         };
         self.index += 1;
 
-        seed.deserialize(ElementDeserializer { value: element })
+        seed.deserialize(ElementDeserializer::scalar(element))
             .map(Some)
     }
 
@@ -467,6 +492,108 @@ impl<'de> SeqAccess<'de> for ColumnAccess {
 /// Deserializes a single element that has already been pulled out of a column.
 struct ElementDeserializer {
     value: Value,
+    /// The shape of this element, when it is itself a slice of a
+    /// multidimensional column. Empty for a scalar.
+    shape: Vec<usize>,
+}
+
+impl ElementDeserializer {
+    fn scalar(value: Value) -> Self {
+        Self {
+            value,
+            shape: Vec::new(),
+        }
+    }
+}
+
+/// Walks the outermost axis of a multidimensional column.
+///
+/// TDIMn gives the axes fastest-varying first, so the last axis is the one that
+/// varies slowest and therefore the outer sequence here. Each step hands back
+/// one slice of the flat values, itself shaped by the axes that remain.
+struct ShapedAccess {
+    value: Value,
+    shape: Vec<usize>,
+    index: usize,
+}
+
+impl ShapedAccess {
+    fn new(value: Value, shape: Vec<usize>) -> Self {
+        Self {
+            value,
+            shape,
+            index: 0,
+        }
+    }
+
+    /// How many slices the outermost axis is divided into.
+    fn groups(&self) -> usize {
+        self.shape.last().copied().unwrap_or(0)
+    }
+
+    /// How many values each of those slices holds.
+    fn group_len(&self) -> usize {
+        self.shape[..self.shape.len().saturating_sub(1)]
+            .iter()
+            .product()
+    }
+}
+
+impl<'de> SeqAccess<'de> for ShapedAccess {
+    type Error = crate::Error;
+
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
+    where
+        T: DeserializeSeed<'de>,
+    {
+        if self.index >= self.groups() {
+            return Ok(None);
+        }
+
+        let len = self.group_len();
+        let group = slice(&self.value, self.index * len, len);
+        self.index += 1;
+
+        seed.deserialize(ElementDeserializer {
+            value: group,
+            shape: self.shape[..self.shape.len() - 1].to_vec(),
+        })
+        .map(Some)
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.groups().saturating_sub(self.index))
+    }
+}
+
+/// A run of `len` elements starting at `start`, as a value of the same kind.
+fn slice(value: &Value, start: usize, len: usize) -> Value {
+    fn take<T: Clone>(values: &[T], start: usize, len: usize) -> Vec<T> {
+        values
+            .get(start..)
+            .map(|rest| rest[..len.min(rest.len())].to_vec())
+            .unwrap_or_default()
+    }
+
+    match value {
+        Value::StringArray(values) => Value::StringArray(take(values, start, len)),
+        Value::Boolean(values) => Value::Boolean(take(values, start, len)),
+        Value::Bit(values) => Value::Bit(take(values, start, len)),
+        Value::U8(values) => Value::U8(take(values, start, len)),
+        Value::I8(values) => Value::I8(take(values, start, len)),
+        Value::U16(values) => Value::U16(take(values, start, len)),
+        Value::I16(values) => Value::I16(take(values, start, len)),
+        Value::U32(values) => Value::U32(take(values, start, len)),
+        Value::I32(values) => Value::I32(take(values, start, len)),
+        Value::I64(values) => Value::I64(take(values, start, len)),
+        Value::U64(values) => Value::U64(take(values, start, len)),
+        Value::F32(values) => Value::F32(take(values, start, len)),
+        Value::F64(values) => Value::F64(take(values, start, len)),
+        Value::C32(values) => Value::C32(take(values, start, len)),
+        Value::M64(values) => Value::M64(take(values, start, len)),
+        // A string and an undefined entry have no elements to slice.
+        Value::String(_) | Value::Null => value.clone(),
+    }
 }
 
 impl ElementDeserializer {
@@ -642,6 +769,10 @@ impl<'de> serde::de::Deserializer<'de> for ElementDeserializer {
     where
         V: Visitor<'de>,
     {
+        if self.shape.len() > 1 {
+            return visitor.visit_seq(ShapedAccess::new(self.value, self.shape));
+        }
+
         visitor.visit_seq(ColumnAccess::new(self.value))
     }
 
@@ -713,24 +844,24 @@ impl<'de> serde::de::Deserializer<'de> for ElementDeserializer {
     }
 }
 
-struct RowAccess<'a, 'de: 'a> {
-    de: &'a mut Deserializer<'de>,
+struct RowAccess<'a, 'de: 'a, R: RowColumns> {
+    de: &'a mut Deserializer<'de, R>,
 }
 
-impl<'a, 'de> RowAccess<'a, 'de> {
-    pub fn new(de: &'a mut Deserializer<'de>) -> Self {
+impl<'a, 'de, R: RowColumns> RowAccess<'a, 'de, R> {
+    pub fn new(de: &'a mut Deserializer<'de, R>) -> Self {
         Self { de }
     }
 }
 
-impl<'de, 'a> MapAccess<'de> for RowAccess<'a, 'de> {
+impl<'de, 'a, R: RowColumns> MapAccess<'de> for RowAccess<'a, 'de, R> {
     type Error = crate::Error;
 
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
     where
         K: DeserializeSeed<'de>,
     {
-        if self.de.field_offset >= self.de.row.field_definitions.len() {
+        if self.de.field_offset >= self.de.row.column_count() {
             return Ok(None);
         }
         seed.deserialize(&mut *self.de).map(Some)
@@ -749,8 +880,7 @@ impl<'de, 'a> MapAccess<'de> for RowAccess<'a, 'de> {
         Some(
             self.de
                 .row
-                .field_definitions
-                .len()
+                .column_count()
                 .saturating_sub(self.de.field_offset),
         )
     }

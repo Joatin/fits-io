@@ -1,14 +1,23 @@
 use std::fmt::{Display, Formatter};
 
+/// What an exposure was for, from the IMAGETYP card.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ImageType {
+    /// A frame of the sky itself.
     Light,
+    /// A zero-length frame, to measure the sensor's readout offset.
     Bias,
+    /// A frame taken with the shutter closed, to measure sensor noise.
     Dark,
+    /// An evenly lit frame, to measure the optics' response across the field.
     Flat,
+    /// A bias frame combined from many.
     MasterBias,
+    /// A dark frame combined from many.
     MasterDark,
+    /// A flat frame combined from many.
     MasterFlat,
+    /// Anything else the card said.
     Unknown(String),
 }
 

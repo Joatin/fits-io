@@ -1,5 +1,6 @@
 use std::error::Error;
 
+/// The type of the values in an array, from its BITPIX card.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Bitpix {
     /// Float 64
@@ -19,6 +20,7 @@ pub enum Bitpix {
 }
 
 impl Bitpix {
+    /// How many bytes one value of this type occupies.
     pub fn byte_size(&self) -> usize {
         match self {
             Bitpix::F64 => 8,

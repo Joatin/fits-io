@@ -42,6 +42,12 @@ pub const PREFIX_CRVAL_N: &str = "CRVAL";
 pub const PREFIX_CTYPE_N: &str = "CTYPE";
 
 /// maximum data value
+/// Checksum over the whole HDU, header and data.
+pub const CHECKSUM: &str = "CHECKSUM";
+
+/// Checksum over the HDU's data section alone.
+pub const DATASUM: &str = "DATASUM";
+
 pub const DATAMAX: &str = "DATAMAX";
 
 /// minimum data value

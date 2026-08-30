@@ -1,4 +1,5 @@
 use crate::header::card::Card;
+use crate::header::table_null_value::TableNullValue;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -126,7 +127,10 @@ impl From<Card> for Value {
             Card::Telescope { value, comment } => Value::String { value, comment },
             Card::TableFields { value, comment } => Value::Integer { value, comment },
             Card::TableHeap { value, comment } => Value::Integer { value, comment },
-            Card::TableNullValueN { value, comment, .. } => Value::String { value, comment },
+            Card::TableNullValueN { value, comment, .. } => match value {
+                TableNullValue::Integer(value) => Value::Integer { value, comment },
+                TableNullValue::Text(value) => Value::String { value, comment },
+            },
             Card::TableScalingFactorN { value, comment, .. } => Value::Float { value, comment },
             Card::TableTypeN { value, comment, .. } => Value::String { value, comment },
             Card::TableUnitN { value, comment, .. } => Value::String { value, comment },
@@ -150,10 +154,7 @@ impl From<Card> for Value {
             Card::Hierarch { .. } => Value::Undefined,
             Card::Space => Value::Undefined,
             Card::Undefined(_) => Value::Undefined,
-            Card::TableFormatN { value, comment, .. } => Value::String {
-                value: value.into(),
-                comment,
-            },
+            Card::TableFormatN { value, comment, .. } => Value::String { value, comment },
             Card::Creator { value, comment } => Value::String { value, comment },
             Card::SubframeXPositionInBinnedPixels { value, comment } => {
                 Value::Integer { value, comment }

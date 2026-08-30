@@ -5,12 +5,15 @@ use crate::fs::fs_image_hdu::FsImageHDU;
 use crate::fs::is_fits_file;
 use crate::fs::open_fits_file::open_fits_file;
 use crate::hdu::{ExtensionHDU, HDU};
+use crate::header::header::BLOCK_NUM_BYTES;
 use crate::header::{ExtensionType, Header};
 use log::{debug, info};
 use std::error::Error;
+use std::fs;
 use std::io::Seek;
 use std::path::{Path, PathBuf};
 
+/// A FITS file read from the filesystem.
 #[derive(Debug, Clone)]
 pub struct FsFits {
     path: PathBuf,
@@ -82,6 +85,7 @@ impl FsFits {
         tokio::task::spawn_blocking(move || Self::open(&path)).await?
     }
 
+    /// An empty FITS file that will be written to `path`.
     pub fn new(path: &Path) -> Self {
         Self {
             path: path.to_path_buf(),
@@ -92,9 +96,33 @@ impl FsFits {
 
     /// Writes this FITS file back to [`FsFits::path`].
     ///
-    /// Writing is not implemented yet.
+    /// The file is written to a temporary file beside it and then renamed, so a
+    /// failure part way through leaves the original where it was rather than
+    /// truncated.
     pub fn save(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        Err("Writing FITS files is not implemented yet".into())
+        self.save_as(&self.path)
+    }
+
+    /// Writes this FITS file to `path`.
+    pub fn save_as(&self, path: &Path) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let bytes = self.to_vec()?;
+
+        let temporary = path.with_extension(format!(
+            "{}.fits-io-tmp",
+            path.extension().unwrap_or_default().to_string_lossy()
+        ));
+
+        fs::write(&temporary, &bytes)?;
+        if let Err(error) = fs::rename(&temporary, path) {
+            // Leaving the half-written file behind would be worse than the
+            // failure itself.
+            let _ = fs::remove_file(&temporary);
+            return Err(error.into());
+        }
+
+        info!("Wrote FITS file: {:?}", path);
+
+        Ok(())
     }
 
     /// Retrieves the path this FITS file belongs to
@@ -124,7 +152,7 @@ impl Fits for FsFits {
         &mut self.primary_hdu
     }
 
-    fn extension_count(&mut self) -> usize {
+    fn extension_count(&self) -> usize {
         self.extension_hdus.len()
     }
 
@@ -144,7 +172,84 @@ impl Fits for FsFits {
         self.extension_hdus.iter_mut()
     }
 
-    fn to_vec(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
-        Err("Writing FITS files is not implemented yet".into())
+    fn push_extension(&mut self, extension: ExtensionHDU<Self>) {
+        self.extension_hdus.push(extension);
     }
+
+    fn remove_extension(&mut self, index: usize) -> Option<ExtensionHDU<Self>> {
+        (index < self.extension_hdus.len()).then(|| self.extension_hdus.remove(index))
+    }
+
+    /// Serialises this file, primary HDU first and then every extension.
+    ///
+    /// Each HDU contributes its header followed by its data section, both padded
+    /// out to whole 2880-byte blocks.
+    fn to_vec(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
+        let mut bytes = Vec::new();
+
+        append_hdu(
+            &mut bytes,
+            &self.primary_hdu.header().conformed(None),
+            &self.primary_hdu.data_bytes()?,
+            DataPadding::Zero,
+        );
+
+        for extension in &self.extension_hdus {
+            let (header, data, padding) = match extension {
+                ExtensionHDU::Image(hdu) => (
+                    hdu.header().conformed(Some(ExtensionType::Image)),
+                    hdu.data_bytes()?,
+                    DataPadding::Zero,
+                ),
+                ExtensionHDU::BinTable(hdu) => (
+                    hdu.header().conformed(Some(ExtensionType::BinTable)),
+                    hdu.data_bytes()?,
+                    DataPadding::Zero,
+                ),
+                // An ASCII table holds characters, and the standard pads it with
+                // the blanks that a character field means, not with zero bytes.
+                ExtensionHDU::AsciiTable(hdu) => (
+                    hdu.header().conformed(Some(ExtensionType::AsciiTable)),
+                    hdu.data_bytes()?,
+                    DataPadding::Blank,
+                ),
+            };
+
+            append_hdu(&mut bytes, &header, &data, padding);
+        }
+
+        Ok(bytes)
+    }
+}
+
+/// What a data section is padded out to its block boundary with.
+#[derive(Debug, Clone, Copy)]
+enum DataPadding {
+    Zero,
+    Blank,
+}
+
+impl DataPadding {
+    fn byte(self) -> u8 {
+        match self {
+            DataPadding::Zero => 0,
+            DataPadding::Blank => b' ',
+        }
+    }
+}
+
+/// Appends one HDU: its header, its data, and the padding that squares the data
+/// off to a whole number of blocks.
+///
+/// The header is rendered last, because its CHECKSUM card covers the padded data
+/// as well as the header itself.
+fn append_hdu(bytes: &mut Vec<u8>, header: &Header, data: &[u8], padding: DataPadding) {
+    let mut data = data.to_vec();
+    let overhang = data.len() % BLOCK_NUM_BYTES;
+    if overhang != 0 {
+        data.resize(data.len() + BLOCK_NUM_BYTES - overhang, padding.byte());
+    }
+
+    bytes.extend_from_slice(&header.checksummed_bytes(&data));
+    bytes.extend_from_slice(&data);
 }

@@ -1,6 +1,7 @@
 use crate::header::extension_type::ExtensionType;
+use crate::header::header::CARD_NUM_BYTES;
 use crate::header::value::Value;
-use crate::header::{BayerPattern, Bitpix, ImageType, TableColumnFormat, card_keys};
+use crate::header::{BayerPattern, Bitpix, ImageType, TableNullValue, card_keys};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use std::error::Error;
 
@@ -191,7 +192,7 @@ pub enum Card {
     },
     TableNullValueN {
         index: usize,
-        value: String,
+        value: TableNullValue,
         comment: Option<String>,
     },
     TableScalingFactorN {
@@ -209,9 +210,18 @@ pub enum Card {
         value: String,
         comment: Option<String>,
     },
+    /// TFORMn, kept as written.
+    ///
+    /// The same code means different things in the two kinds of table — `E` is
+    /// a 32-bit float in a binary table and a fixed-width decimal field in an
+    /// ASCII one — and a card does not know which kind of table it belongs to.
+    /// Interpreting it is left to the reader, which does; see
+    /// [`Header::table_column_format`](crate::header::Header::table_column_format)
+    /// and
+    /// [`Header::ascii_column_format`](crate::header::Header::ascii_column_format).
     TableFormatN {
         index: usize,
-        value: TableColumnFormat,
+        value: String,
         comment: Option<String>,
     },
     TableScalingZeroPointN {
@@ -501,14 +511,8 @@ impl Card {
 
     fn parse_bscale(buf: &[u8; 80]) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             Ok(Card::BScale { value, comment })
-        } else if let Value::Integer { value, comment } = value {
-            // Some use wrong datatype for this value, lets handle it
-            Ok(Card::BScale {
-                value: value as f64,
-                comment,
-            })
         } else {
             Err("Invalid bscale data format".into())
         }
@@ -525,14 +529,8 @@ impl Card {
 
     fn parse_bzero(buf: &[u8; 80]) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             Ok(Card::BZero { value, comment })
-        } else if let Value::Integer { value, comment } = value {
-            // Some use wrong datatype for this value, lets handle it
-            Ok(Card::BZero {
-                value: value as f64,
-                comment,
-            })
         } else {
             Err("Invalid bzero data format".into())
         }
@@ -540,7 +538,7 @@ impl Card {
 
     fn parse_data_max(buf: &[u8; 80]) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             Ok(Card::DataMax { value, comment })
         } else {
             Err("Invalid data max data format".into())
@@ -549,7 +547,7 @@ impl Card {
 
     fn parse_data_min(buf: &[u8; 80]) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             Ok(Card::DataMin { value, comment })
         } else {
             Err("Invalid data min data format".into())
@@ -580,7 +578,7 @@ impl Card {
 
     fn parse_epoch(buf: &[u8; 80]) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             Ok(Card::Epoch { value, comment })
         } else {
             Err("Invalid epoch data format".into())
@@ -589,7 +587,7 @@ impl Card {
 
     fn parse_equinox(buf: &[u8; 80]) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             Ok(Card::Equinox { value, comment })
         } else {
             Err("Invalid equinox data format".into())
@@ -763,13 +761,8 @@ impl Card {
 
     fn parse_focal_length(buf: &[u8; 80]) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             Ok(Card::FocalLength { value, comment })
-        } else if let Value::Integer { value, comment } = value {
-            Ok(Card::FocalLength {
-                value: value as f64,
-                comment,
-            })
         } else {
             Err("Invalid focallen data format".into())
         }
@@ -777,7 +770,7 @@ impl Card {
 
     fn parse_exposure_time(buf: &[u8; 80]) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             let value = std::time::Duration::from_secs_f64(value);
             Ok(Card::ExposureTime { value, comment })
         } else {
@@ -787,7 +780,7 @@ impl Card {
 
     fn parse_ccd_temperature(buf: &[u8; 80]) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             Ok(Card::CCDTemperature { value, comment })
         } else {
             Err("Invalid ccd-temp data format".into())
@@ -877,7 +870,7 @@ impl Card {
         buf: &[u8; 80],
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             Ok(Card::PixelSizeXWithBinningInMicrons { value, comment })
         } else {
             Err("Invalid XPIXSZ data format".into())
@@ -888,7 +881,7 @@ impl Card {
         buf: &[u8; 80],
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             Ok(Card::PixelSizeYWithBinningInMicrons { value, comment })
         } else {
             Err("Invalid YPIXSZ data format".into())
@@ -909,7 +902,7 @@ impl Card {
 
     fn parse_exposure(buf: &[u8; 80]) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             let value = std::time::Duration::from_secs_f64(value);
             Ok(Card::Exposure { value, comment })
         } else {
@@ -919,7 +912,7 @@ impl Card {
 
     fn parse_ra(buf: &[u8; 80]) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             Ok(Card::Ra { value, comment })
         } else {
             Err("Invalid RA data format".into())
@@ -928,7 +921,7 @@ impl Card {
 
     fn parse_dec(buf: &[u8; 80]) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             Ok(Card::Dec { value, comment })
         } else {
             Err("Invalid DEC data format".into())
@@ -955,7 +948,7 @@ impl Card {
 
     fn parse_site_longitude(buf: &[u8; 80]) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             Ok(Card::SiteLongitude { value, comment })
         } else {
             Err("Invalid SITELONG data format".into())
@@ -964,7 +957,7 @@ impl Card {
 
     fn parse_site_latitude(buf: &[u8; 80]) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let value = parse_value(&buf[10..])?;
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             Ok(Card::SiteLatitude { value, comment })
         } else {
             Err("Invalid SITELAT data format".into())
@@ -997,7 +990,7 @@ impl Card {
 
         let index = parse_card_index(key, card_keys::PREFIX_CDELT_N)?;
 
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             Ok(Card::CoordinateDeltaN {
                 index,
                 value,
@@ -1016,7 +1009,7 @@ impl Card {
 
         let index = parse_card_index(key, card_keys::PREFIX_CROTA_N)?;
 
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             Ok(Card::CoordinateRotationN {
                 index,
                 value,
@@ -1035,7 +1028,7 @@ impl Card {
 
         let index = parse_card_index(key, card_keys::PREFIX_CRPIX_N)?;
 
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             Ok(Card::CoordinateReferencePixelN {
                 index,
                 value,
@@ -1054,7 +1047,7 @@ impl Card {
 
         let index = parse_card_index(key, card_keys::PREFIX_CRVAL_N)?;
 
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             Ok(Card::CoordinateValueAtPixelN {
                 index,
                 value,
@@ -1108,7 +1101,7 @@ impl Card {
 
         let index = parse_card_index(key, card_keys::PREFIX_PSCAL_N)?;
 
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             Ok(Card::ParameterScalingFactorN {
                 index,
                 value,
@@ -1146,7 +1139,7 @@ impl Card {
 
         let index = parse_card_index(key, card_keys::PREFIX_PZERO_N)?;
 
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             Ok(Card::ParameterScalingZeroPointN {
                 index,
                 value,
@@ -1203,7 +1196,7 @@ impl Card {
         if let Value::String { value, comment } = value {
             Ok(Card::TableFormatN {
                 index,
-                value: value.try_into()?,
+                value,
                 comment,
             })
         } else {
@@ -1238,15 +1231,19 @@ impl Card {
 
         let index = parse_card_index(key, card_keys::PREFIX_TNULL_N)?;
 
-        if let Value::String { value, comment } = value {
-            Ok(Card::TableNullValueN {
-                index,
-                value,
-                comment,
-            })
-        } else {
-            Err("Invalid TNULLN data format".into())
-        }
+        // Binary tables write an integer here and ASCII tables a string; the
+        // card does not say which kind of table it belongs to, so accept both.
+        let (value, comment) = match value {
+            Value::Integer { value, comment } => (TableNullValue::Integer(value), comment),
+            Value::String { value, comment } => (TableNullValue::Text(value), comment),
+            _ => return Err("Invalid TNULLN data format".into()),
+        };
+
+        Ok(Card::TableNullValueN {
+            index,
+            value,
+            comment,
+        })
     }
 
     fn parse_table_scaling_factor(
@@ -1257,7 +1254,7 @@ impl Card {
 
         let index = parse_card_index(key, card_keys::PREFIX_TSCAL_N)?;
 
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             Ok(Card::TableScalingFactorN {
                 index,
                 value,
@@ -1308,7 +1305,7 @@ impl Card {
 
         let index = parse_card_index(key, card_keys::PREFIX_TZERO_N)?;
 
-        if let Value::Float { value, comment } = value {
+        if let Some((value, comment)) = as_float(value) {
             Ok(Card::TableScalingZeroPointN {
                 index,
                 value,
@@ -1550,6 +1547,21 @@ fn parse_string(s: String) -> Result<String, Box<dyn Error + Send + Sync>> {
     }
 }
 
+/// Reads a card value that the FITS standard types as floating point.
+///
+/// A conforming writer may leave off the decimal point when the value happens
+/// to be whole, and in practice most do: `BZERO = 32768` on unsigned 16-bit
+/// images and `TSCAL1 = 1` on binary table columns are both spelled as
+/// integers. Those parse as `Value::Integer`, so insisting on `Value::Float`
+/// here rejected the card, and a rejected card fails the whole header.
+fn as_float(value: Value) -> Option<(f64, Option<String>)> {
+    match value {
+        Value::Float { value, comment } => Some((value, comment)),
+        Value::Integer { value, comment } => Some((value as f64, comment)),
+        _ => None,
+    }
+}
+
 fn parse_number(v: String, c: Option<String>) -> Result<Value, Box<dyn Error + Send + Sync>> {
     if v.is_empty() {
         Ok(Value::Undefined) // FITSv4, section 4.1.2.3
@@ -1575,6 +1587,223 @@ fn parse_number(v: String, c: Option<String>) -> Result<Value, Box<dyn Error + S
             })
         } else {
             Ok(Value::Invalid(v))
+        }
+    }
+}
+
+/// Column, counting from 0, at which a fixed-format value ends.
+///
+/// The FITS standard puts the value in columns 11 to 30 and right-justifies
+/// numbers and logicals against column 30.
+const VALUE_END_COLUMN: usize = 30;
+
+impl Card {
+    /// Renders this card as the 80 bytes it occupies in a header.
+    ///
+    /// Cards are written in the standard's fixed format: the keyword in columns
+    /// 1 to 8, `= ` in columns 9 and 10, and the value from column 11 — numbers
+    /// and logicals right-justified against column 30, strings quoted and
+    /// left-justified — followed by ` / ` and the comment if there is room for
+    /// one.
+    pub fn to_bytes(&self) -> [u8; CARD_NUM_BYTES] {
+        let text = match self {
+            Card::End => card_keys::END.to_string(),
+            Card::Space => String::new(),
+
+            // COMMENT and HISTORY carry free text rather than a value, so they
+            // have no `= ` and run from column 9 to the end of the card.
+            Card::Comment(text) => format!("{:<8}{}", card_keys::COMMENT, text),
+            Card::History(text) => format!("{:<8}{}", card_keys::HISTORY, text),
+
+            // A card this crate could not interpret is written back exactly as
+            // it was read, so that reading and writing a file leaves it alone.
+            Card::Undefined(text) => text.clone(),
+
+            card => format_value_card(&card.key(), &Value::from(card)),
+        };
+
+        let mut bytes = [b' '; CARD_NUM_BYTES];
+        for (slot, byte) in bytes.iter_mut().zip(text.bytes()) {
+            *slot = byte;
+        }
+        bytes
+    }
+}
+
+/// Renders a keyword and its value in the standard's fixed format.
+fn format_value_card(key: &str, value: &Value) -> String {
+    let rendered = match value {
+        // A string is quoted, with any embedded quote doubled, and padded to
+        // the eight characters the standard asks for as a minimum.
+        Value::String { value, .. } => {
+            let escaped = value.replace('\'', "''");
+            format!("'{:<8}'", escaped)
+        }
+        Value::Logical { .. } | Value::Integer { .. } | Value::Float { .. } => {
+            format!("{:>20}", value.value_to_string())
+        }
+        // An undefined value is written as an empty field, which is how the
+        // standard spells "this keyword has no value".
+        Value::Undefined | Value::Invalid(_) => " ".repeat(20),
+    };
+
+    let mut card = format!("{:<8}= {}", key, rendered);
+
+    // The comment is optional, and dropped rather than truncated when the value
+    // has already used the card up.
+    if let Some(comment) = comment_of(value) {
+        let padded = format!("{:<width$}", card, width = VALUE_END_COLUMN);
+        let with_comment = format!("{} / {}", padded, comment);
+        if with_comment.len() <= CARD_NUM_BYTES {
+            return with_comment;
+        }
+        card = padded;
+    }
+
+    card
+}
+
+fn comment_of(value: &Value) -> Option<&str> {
+    match value {
+        Value::Integer { comment, .. }
+        | Value::Float { comment, .. }
+        | Value::Logical { comment, .. }
+        | Value::String { comment, .. } => comment.as_deref(),
+        Value::Undefined | Value::Invalid(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::Card;
+    use crate::header::card_keys;
+
+    fn rendered(card: &Card) -> String {
+        String::from_utf8(card.to_bytes().to_vec()).expect("cards are ASCII")
+    }
+
+    #[test]
+    fn every_card_is_exactly_eighty_bytes() {
+        for card in [
+            Card::End,
+            Card::Space,
+            Card::Comment("a comment".into()),
+            Card::Simple {
+                value: true,
+                comment: None,
+            },
+            Card::ExtensionName {
+                value: "a very long extension name indeed".into(),
+                comment: Some("with a comment that will not fit alongside it".into()),
+            },
+        ] {
+            assert_eq!(card.to_bytes().len(), 80, "{card:?}");
+            assert_eq!(rendered(&card).len(), 80, "{card:?}");
+        }
+    }
+
+    #[test]
+    fn a_logical_is_right_justified_against_column_thirty() {
+        let card = rendered(&Card::Simple {
+            value: true,
+            comment: None,
+        });
+
+        assert!(
+            card.starts_with("SIMPLE  =                    T"),
+            "{card:?}"
+        );
+        assert_eq!(&card[29..30], "T");
+    }
+
+    #[test]
+    fn an_integer_is_right_justified_and_keeps_its_comment() {
+        let card = rendered(&Card::NAxis {
+            value: 2,
+            comment: Some("number of axes".into()),
+        });
+
+        assert!(
+            card.starts_with("NAXIS   =                    2 / number of axes"),
+            "{card:?}"
+        );
+    }
+
+    #[test]
+    fn a_string_is_quoted_and_padded_to_eight_characters() {
+        let card = rendered(&Card::ExtensionName {
+            value: "SCI".into(),
+            comment: None,
+        });
+
+        assert!(card.starts_with("EXTNAME = 'SCI     '"), "{card:?}");
+    }
+
+    #[test]
+    fn a_quote_inside_a_string_is_doubled() {
+        // The standard escapes a single quote by writing it twice, and a reader
+        // that met a lone quote would end the string early.
+        let card = rendered(&Card::Object {
+            value: "Barnard's Star".into(),
+            comment: None,
+        });
+
+        assert!(card.contains("'Barnard''s Star'"), "{card:?}");
+    }
+
+    #[test]
+    fn a_comment_that_does_not_fit_is_dropped_rather_than_overflowing() {
+        let card = rendered(&Card::Object {
+            value: "a".repeat(60),
+            comment: Some("this cannot possibly fit".into()),
+        });
+
+        assert_eq!(card.len(), 80);
+        assert!(!card.contains("this cannot"), "{card:?}");
+    }
+
+    #[test]
+    fn comment_and_history_cards_carry_free_text() {
+        let card = rendered(&Card::Comment("processed by fits-io".into()));
+        assert!(card.starts_with("COMMENT processed by fits-io"), "{card:?}");
+
+        let card = rendered(&Card::History("resampled".into()));
+        assert!(card.starts_with("HISTORY resampled"), "{card:?}");
+    }
+
+    #[test]
+    fn the_end_card_is_the_keyword_and_nothing_else() {
+        let card = rendered(&Card::End);
+
+        assert!(card.starts_with(card_keys::END));
+        assert_eq!(card.trim_end(), card_keys::END);
+    }
+
+    #[test]
+    fn a_card_round_trips_through_bytes() {
+        for original in [
+            Card::Simple {
+                value: true,
+                comment: None,
+            },
+            Card::NAxis {
+                value: 3,
+                comment: Some("axes".into()),
+            },
+            Card::ExtensionName {
+                value: "SCI".into(),
+                comment: None,
+            },
+        ] {
+            let bytes = original.to_bytes();
+            let parsed = Card::try_from(&bytes).expect("a card this crate wrote must parse");
+
+            assert_eq!(
+                parsed,
+                original,
+                "from {:?}",
+                String::from_utf8_lossy(&bytes)
+            );
         }
     }
 }

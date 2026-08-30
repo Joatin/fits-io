@@ -47,7 +47,11 @@ jobs:
       - run: rustup update stable && rustup default stable
       # Every feature must build on its own. Optional dependencies that leak into
       # ungated code only show up here.
+      # A warning here means a module or import is gated for one feature set and
+      # not another, which is exactly what this job is for.
       - name: Build each feature combination
+        env:
+          RUSTFLAGS: -D warnings
         run: |
           set -euxo pipefail
           cargo build --no-default-features
@@ -55,9 +59,16 @@ jobs:
             cargo build --no-default-features --features "$feature"
           done
           cargo build --no-default-features --features fs,serde
+          # serde without rayon compiles a different `from_bin_table`.
+          cargo build --no-default-features --features serde,tokio
+          # `gzip` does not imply `fs`: a gzipped buffer needs no filesystem.
+          cargo build --no-default-features --features gzip,tokio
           cargo build --no-default-features --features gzip,tokio,fs,rayon,serde
           cargo build --all-features
       - run: cargo test --no-default-features --features gzip,tokio,fs,rayon,serde
+      # Nothing here touches the filesystem, so this covers the in-memory reader
+      # standing on its own.
+      - run: cargo test --no-default-features
 
   lint:
     name: Format and Clippy
@@ -68,6 +79,10 @@ jobs:
       - run: rustup component add rustfmt clippy
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
+      # Catches broken intra-doc links, which nothing else does.
+      - run: cargo doc --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   package:
     name: Package

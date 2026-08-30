@@ -1,9 +1,13 @@
 use std::error::Error;
 
+/// Which kind of extension an XTENSION card names.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ExtensionType {
+    /// `IMAGE`: an array, like the primary HDU's.
     Image,
+    /// `BINTABLE`: a table of binary fields.
     BinTable,
+    /// `TABLE`: a table of fixed-width text.
     AsciiTable,
 }
 

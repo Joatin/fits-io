@@ -18,12 +18,22 @@ use std::error::Error;
 ///
 /// Floating point images have no representable range to fall back on, so they
 /// require DATAMIN and DATAMAX; see [`Normalizer::from_header`].
+///
+/// An integer image may also mark pixels as carrying no value at all, with a
+/// BLANK card naming the raw value that means "undefined". Such pixels have no
+/// physical value and no place on the 0.0..=1.0 scale, so both [`physical`] and
+/// [`normalize`] answer NaN for them — the same way FITS itself spells an
+/// undefined floating point sample.
+///
+/// [`physical`]: Normalizer::physical
+/// [`normalize`]: Normalizer::normalize
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Normalizer {
     zero_offset: f64,
     scale: f64,
     minimum: f64,
     maximum: f64,
+    blank: Option<f64>,
 }
 
 impl Normalizer {
@@ -36,7 +46,28 @@ impl Normalizer {
             scale,
             minimum: minimum.min(maximum),
             maximum: minimum.max(maximum),
+            blank: None,
         }
+    }
+
+    /// Marks `blank` as the raw value that means "this pixel is undefined".
+    ///
+    /// This is the BLANK card, which the standard defines only for the integer
+    /// BITPIX types; a floating point image says the same thing with a NaN and
+    /// needs no card for it.
+    pub fn with_blank(mut self, blank: Option<i64>) -> Self {
+        self.blank = blank.map(|blank| blank as f64);
+        self
+    }
+
+    /// The raw value this normaliser treats as undefined, if any.
+    pub fn blank(&self) -> Option<f64> {
+        self.blank
+    }
+
+    /// Whether `raw` is the BLANK value, and so carries no data.
+    pub fn is_blank(&self, raw: f64) -> bool {
+        self.blank == Some(raw)
     }
 
     /// Builds a normaliser spanning the full representable range of `bitpix`.
@@ -105,31 +136,48 @@ impl Normalizer {
         let zero_offset = header.bzero_or_default();
         let scale = header.bscale_or_default();
 
+        let blank = blank_for(header, bitpix);
+
         // DATAMIN and DATAMAX are already in physical units.
+
         if let (Some(minimum), Some(maximum)) = (header.data_min(), header.data_max()) {
-            return Ok(Self::new(zero_offset, scale, minimum, maximum));
+            return Ok(Self::new(zero_offset, scale, minimum, maximum).with_blank(blank));
         }
 
-        Self::for_bitpix(bitpix, zero_offset, scale).ok_or_else(|| {
-            format!(
+        Self::for_bitpix(bitpix, zero_offset, scale)
+            .map(|normalizer| normalizer.with_blank(blank))
+            .ok_or_else(|| {
+                format!(
                 "Cannot normalise a {:?} image in a single pass: it carries neither a DATAMIN nor \
                  a DATAMAX card, so its black and white points are unknown",
                 bitpix
             )
             .into()
-        })
+            })
     }
 
     /// Converts a raw array value into physical units.
+    ///
+    /// A BLANK pixel has no physical value, and reads as NaN.
     pub fn physical(&self, raw: f64) -> f64 {
+        if self.is_blank(raw) {
+            return f64::NAN;
+        }
+
         self.zero_offset + self.scale * raw
     }
 
     /// Converts a raw array value into the `0.0..=1.0` range.
     ///
     /// Values outside the black and white points are clamped, which matters when
-    /// DATAMIN and DATAMAX do not actually bound the data.
+    /// DATAMIN and DATAMAX do not actually bound the data. A BLANK pixel is not
+    /// clamped into range but reads as NaN, so that "undefined" stays
+    /// distinguishable from "black".
     pub fn normalize(&self, raw: f64) -> f64 {
+        if self.is_blank(raw) {
+            return f64::NAN;
+        }
+
         let range = self.maximum - self.minimum;
 
         // A degenerate range (BSCALE of 0, or DATAMIN == DATAMAX) has no
@@ -139,6 +187,18 @@ impl Normalizer {
         }
 
         ((self.physical(raw) - self.minimum) / range).clamp(0.0, 1.0)
+    }
+}
+
+/// The BLANK card, but only where the standard gives it a meaning.
+///
+/// BLANK is defined for the integer BITPIX types only. A floating point image
+/// that carries the card anyway is ignoring the standard, and honouring it there
+/// would blank out every pixel that happened to equal the card's value.
+fn blank_for(header: &Header, bitpix: Bitpix) -> Option<i64> {
+    match bitpix {
+        Bitpix::F32 | Bitpix::F64 => None,
+        Bitpix::U8 | Bitpix::I16 | Bitpix::I32 => header.blank(),
     }
 }
 
@@ -152,7 +212,31 @@ mod tests {
             scale,
             minimum,
             maximum,
+            blank: None,
         }
+    }
+
+    #[test]
+    fn a_blank_pixel_has_no_physical_value_and_no_place_on_the_scale() {
+        let normalizer = normalizer(0.0, 1.0, 0.0, 100.0).with_blank(Some(-32768));
+
+        assert!(normalizer.normalize(-32768.0).is_nan());
+        assert!(normalizer.physical(-32768.0).is_nan());
+
+        // Every other value still reads normally.
+        assert_eq!(normalizer.normalize(50.0), 0.5);
+        assert_eq!(normalizer.physical(50.0), 50.0);
+    }
+
+    #[test]
+    fn a_blank_pixel_is_not_clamped_to_black() {
+        // Without BLANK handling, a sentinel below DATAMIN clamps to 0.0 and
+        // becomes indistinguishable from a genuinely black pixel.
+        let plain = normalizer(0.0, 1.0, 0.0, 100.0);
+        assert_eq!(plain.normalize(-32768.0), 0.0);
+
+        let blanked = plain.with_blank(Some(-32768));
+        assert!(blanked.normalize(-32768.0).is_nan());
     }
 
     #[test]
