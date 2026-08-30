@@ -215,3 +215,51 @@ async fn rows_stream_deserialised_out_of_an_ascii_table() -> TestResult {
 
     Ok(())
 }
+
+#[test]
+fn simple_decimals_are_written_as_fixed_point() -> TestResult {
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct Row {
+        #[serde(rename = "MAG")]
+        magnitude: f64,
+    }
+
+    // An ASCII table exists to be legible. `1.5` written as
+    // `1.5000000000000000E0` is exact but a poor thing to hand a reader.
+    let rows = vec![Row { magnitude: 1.5 }, Row { magnitude: -0.25 }];
+    let table = to_ascii_table(&rows)?;
+
+    let format = String::from(table.field_definitions()[0].format);
+    assert!(format.starts_with('F'), "got {format}");
+
+    // Exactness still comes first.
+    let read: Vec<Row> = from_ascii_table(&table)?;
+    assert_eq!(read, rows);
+
+    Ok(())
+}
+
+#[test]
+fn values_that_fixed_point_cannot_hold_fall_back_to_exponential() -> TestResult {
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct Row {
+        #[serde(rename = "VALUE")]
+        value: f64,
+    }
+
+    let rows = vec![
+        Row {
+            value: std::f64::consts::PI,
+        },
+        Row { value: 1e-300 },
+    ];
+    let table = to_ascii_table(&rows)?;
+
+    let format = String::from(table.field_definitions()[0].format);
+    assert!(format.starts_with('E'), "got {format}");
+
+    let read: Vec<Row> = from_ascii_table(&table)?;
+    assert_eq!(read, rows);
+
+    Ok(())
+}

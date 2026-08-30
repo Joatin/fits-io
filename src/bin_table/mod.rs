@@ -6,7 +6,6 @@ pub(crate) mod row_columns;
 mod value;
 
 mod bin_table;
-#[cfg(feature = "serde")]
 mod encode;
 mod field_definition;
 #[cfg(feature = "tokio")]

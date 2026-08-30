@@ -1400,6 +1400,66 @@ impl Header {
         bytes
     }
 
+    /// Sets the NAXISn card for axis `index`, which counts from 0.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a negative length, which no axis can have.
+    pub fn set_naxis_n(
+        &mut self,
+        index: usize,
+        length: i64,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if length < 0 {
+            return Err(format!("An axis cannot be {} long", length).into());
+        }
+
+        self.set(Card::NAxisN {
+            index,
+            value: length,
+            comment: None,
+        });
+
+        Ok(())
+    }
+
+    /// Checks that this header describes a data section of `actual` bytes.
+    ///
+    /// The header is the only thing that says how to read the data after it, so
+    /// one that disagrees with what follows produces a file nothing can read:
+    /// the next HDU is looked for at the wrong offset, and the array comes back
+    /// the wrong shape. Setting an image or a table keeps the two in step, but a
+    /// caller who edits NAXISn through [`Header::header_mut`] can put them out
+    /// of step again, and this is where that is caught.
+    ///
+    /// This can only catch an HDU that carries its own data. Where the data is
+    /// still in a file, the header is what says how much of it to read, so the
+    /// two cannot disagree — a header edited to describe more than the file
+    /// holds fails when the read runs off the end instead.
+    ///
+    /// [`Header::header_mut`]: crate::hdu::HDU::header_mut
+    pub(crate) fn validate_against_data(
+        &self,
+        actual: usize,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let declared = self.data_bytes_len();
+
+        // The data section is padded out to whole blocks, so anything from the
+        // declared length up to the end of its last block is consistent.
+        let padded = declared.div_ceil(BLOCK_NUM_BYTES) * BLOCK_NUM_BYTES;
+
+        if actual < declared || actual > padded {
+            return Err(format!(
+                "This header describes {} bytes of data, but the HDU holds {}. A header that \
+                 disagrees with its data produces a file that cannot be read back.",
+                declared, actual
+            )
+            .into());
+        }
+
+        Ok(())
+    }
+
     /// This header with its mandatory cards present and in the order the FITS
     /// standard requires.
     ///

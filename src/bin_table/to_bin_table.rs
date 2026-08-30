@@ -446,7 +446,7 @@ enum IntegerWidth {
 /// same size: a `u16` of 40000 does not fit in an `I`.
 fn integer_width(value: &Value) -> IntegerWidth {
     match value {
-        Value::Bit(_) | Value::U8(_) | Value::Null => IntegerWidth::Byte,
+        Value::Bit { .. } | Value::U8(_) | Value::Null => IntegerWidth::Byte,
         Value::I8(_) | Value::I16(_) => IntegerWidth::Short,
         Value::U16(_) | Value::I32(_) => IntegerWidth::Int,
         _ => IntegerWidth::Long,
@@ -459,7 +459,8 @@ fn element_count(value: &Value) -> usize {
         Value::String(_) => 1,
         Value::StringArray(values) => values.len(),
         Value::Boolean(values) => values.len(),
-        Value::Bit(values) | Value::U8(values) => values.len(),
+        Value::U8(values) => values.len(),
+        Value::Bit { len, .. } => *len,
         Value::I8(values) => values.len(),
         Value::U16(values) => values.len(),
         Value::I16(values) => values.len(),

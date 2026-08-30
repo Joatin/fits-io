@@ -62,7 +62,8 @@ impl<'de, R: RowColumns> Deserializer<'de, R> {
 fn as_integer(value: &Value) -> Option<i128> {
     match value {
         Value::Boolean(values) => values.first().map(|value| i128::from(*value)),
-        Value::Bit(values) | Value::U8(values) => values.first().map(|value| i128::from(*value)),
+        Value::U8(values) => values.first().map(|value| i128::from(*value)),
+        Value::Bit { bytes, .. } => bytes.first().map(|value| i128::from(*value)),
         Value::I8(values) => values.first().map(|value| i128::from(*value)),
         Value::U16(values) => values.first().map(|value| i128::from(*value)),
         Value::I16(values) => values.first().map(|value| i128::from(*value)),
@@ -99,7 +100,8 @@ fn len(value: &Value) -> usize {
         Value::String(_) => 1,
         Value::StringArray(values) => values.len(),
         Value::Boolean(values) => values.len(),
-        Value::Bit(values) | Value::U8(values) => values.len(),
+        Value::U8(values) => values.len(),
+        Value::Bit { len, .. } => *len,
         Value::I8(values) => values.len(),
         Value::U16(values) => values.len(),
         Value::I16(values) => values.len(),
@@ -270,7 +272,7 @@ impl<'de, R: RowColumns> serde::de::Deserializer<'de> for &mut Deserializer<'de,
         let value = self.value()?;
 
         match value {
-            Value::U8(bytes) | Value::Bit(bytes) => visitor.visit_byte_buf(bytes),
+            Value::U8(bytes) | Value::Bit { bytes, .. } => visitor.visit_byte_buf(bytes),
             Value::String(text) => visitor.visit_byte_buf(text.into_bytes()),
             _ => Err(self.invalid_type("bytes")),
         }
@@ -434,7 +436,10 @@ impl ColumnAccess {
             Value::String(text) => Value::String(text.clone()),
             Value::StringArray(values) => Value::String(values.get(index)?.clone()),
             Value::Boolean(values) => Value::Boolean(vec![*values.get(index)?]),
-            Value::Bit(values) => Value::Bit(vec![*values.get(index)?]),
+            Value::Bit { bytes, .. } => Value::Bit {
+                bytes: vec![*bytes.get(index)?],
+                len: 8,
+            },
             Value::U8(values) => Value::U8(vec![*values.get(index)?]),
             Value::I8(values) => Value::I8(vec![*values.get(index)?]),
             Value::U16(values) => Value::U16(vec![*values.get(index)?]),
@@ -578,7 +583,10 @@ fn slice(value: &Value, start: usize, len: usize) -> Value {
     match value {
         Value::StringArray(values) => Value::StringArray(take(values, start, len)),
         Value::Boolean(values) => Value::Boolean(take(values, start, len)),
-        Value::Bit(values) => Value::Bit(take(values, start, len)),
+        Value::Bit { bytes, len: bits } => Value::Bit {
+            bytes: take(bytes, start, len),
+            len: (*bits).min(len * 8),
+        },
         Value::U8(values) => Value::U8(take(values, start, len)),
         Value::I8(values) => Value::I8(take(values, start, len)),
         Value::U16(values) => Value::U16(take(values, start, len)),
@@ -723,7 +731,7 @@ impl<'de> serde::de::Deserializer<'de> for ElementDeserializer {
         V: Visitor<'de>,
     {
         match self.value {
-            Value::U8(bytes) | Value::Bit(bytes) => visitor.visit_byte_buf(bytes),
+            Value::U8(bytes) | Value::Bit { bytes, .. } => visitor.visit_byte_buf(bytes),
             Value::String(text) => visitor.visit_byte_buf(text.into_bytes()),
             _ => Err(self.invalid_type("bytes")),
         }

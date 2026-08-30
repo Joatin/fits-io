@@ -31,7 +31,8 @@ pub(crate) fn encode(value: &Value, format: TableColumnFormat, out: &mut Vec<u8>
         Value::Boolean(values) => {
             out.extend(values.iter().map(|value| if *value { b'T' } else { b'F' }));
         }
-        Value::Bit(values) | Value::U8(values) => out.extend_from_slice(values),
+        Value::U8(values) => out.extend_from_slice(values),
+        Value::Bit { bytes, .. } => out.extend_from_slice(bytes),
         Value::I8(values) => out.extend(values.iter().map(|value| *value as u8)),
 
         Value::U16(values) => extend(out, values, u16::to_be_bytes),

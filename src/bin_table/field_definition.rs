@@ -242,7 +242,7 @@ impl FieldDefinition {
             value @ (Value::String(_)
             | Value::StringArray(_)
             | Value::Boolean(_)
-            | Value::Bit(_)
+            | Value::Bit { .. }
             | Value::Null) => value,
         }
     }

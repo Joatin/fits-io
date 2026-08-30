@@ -64,11 +64,54 @@ fn column_format<'a>(values: impl Iterator<Item = &'a Value> + Clone) -> AsciiCo
             Value::F32(_) | Value::F64(_) | Value::C32(_) | Value::M64(_)
         )
     }) {
+        // Fixed-point is easier to read, and an ASCII table exists to be read,
+        // so it is used wherever it can hold the values exactly.
+        if let Some(decimals) = fixed_decimals(values.clone()) {
+            let candidate = AsciiColumnFormat::Fixed(0, decimals);
+            return AsciiColumnFormat::Fixed(width(values, candidate), decimals);
+        }
+
         let candidate = AsciiColumnFormat::Exponential(0, DECIMALS);
         return AsciiColumnFormat::Exponential(width(values, candidate), DECIMALS);
     }
 
     AsciiColumnFormat::Integer(width(values, AsciiColumnFormat::Integer(0)))
+}
+
+/// How many decimal places would write every value in a column exactly, if any
+/// reasonable number does.
+///
+/// Exponential notation always round-trips, but `1.5` reading back as
+/// `1.5000000000000000E0` is a poor thing to hand someone looking at a table
+/// meant for human eyes. Fixed-point is used when it loses nothing.
+fn fixed_decimals<'a>(values: impl Iterator<Item = &'a Value> + Clone) -> Option<usize> {
+    /// Beyond this a fixed-point field is both unwieldy and unlikely to help.
+    const MOST: usize = 12;
+
+    let numbers: Vec<f64> = values
+        .flat_map(|value| match value {
+            Value::F32(values) => values.iter().map(|value| *value as f64).collect(),
+            Value::F64(values) => values.clone(),
+            _ => Vec::new(),
+        })
+        .collect();
+
+    // A value too large for fixed-point to state compactly, or one that is not a
+    // number at all, belongs in exponential notation.
+    if numbers
+        .iter()
+        .any(|number| !number.is_finite() || number.abs() >= 1e15)
+    {
+        return None;
+    }
+
+    (0..=MOST).find(|decimals| {
+        numbers.iter().all(|number| {
+            format!("{:.*}", decimals, number)
+                .parse::<f64>()
+                .is_ok_and(|read| read == *number)
+        })
+    })
 }
 
 /// The width of the widest value in a column, once written.

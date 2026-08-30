@@ -403,3 +403,40 @@ fn writing_a_smaller_image_clears_the_axes_it_no_longer_has() -> TestResult {
 
     Ok(())
 }
+
+#[test]
+fn a_header_that_contradicts_its_data_is_not_written() -> TestResult {
+    // The header is the only thing that says how to read what follows it. One
+    // that disagrees produces a file nothing can read back: the array comes out
+    // the wrong shape and the next HDU is looked for in the wrong place.
+    let mut fits = open("write-lying.fits", &minimal_image())?;
+
+    // Set a 2x2 image, then claim it is 4x2.
+    fits.primary_hdu_mut()
+        .set_raw_images_u8(2, 2, &[&[1, 2, 3, 4]])?;
+    fits.primary_hdu_mut()
+        .header_mut()
+        .set_naxis_n(0, 4)
+        .expect("NAXIS1 can be set");
+
+    let error = fits
+        .to_vec()
+        .expect_err("a header that contradicts its data must not be written");
+
+    assert!(
+        error.to_string().contains("cannot be read back"),
+        "got: {error}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn a_header_that_matches_its_data_still_writes() -> TestResult {
+    // The check must not object to the block padding every data section carries.
+    let fits = open("write-honest.fits", &minimal_image())?;
+
+    assert!(!fits.to_vec()?.is_empty());
+
+    Ok(())
+}

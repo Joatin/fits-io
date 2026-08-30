@@ -192,7 +192,7 @@ impl Fits for FsFits {
             &self.primary_hdu.header().conformed(None),
             &self.primary_hdu.data_bytes()?,
             DataPadding::Zero,
-        );
+        )?;
 
         for extension in &self.extension_hdus {
             let (header, data, padding) = match extension {
@@ -215,7 +215,7 @@ impl Fits for FsFits {
                 ),
             };
 
-            append_hdu(&mut bytes, &header, &data, padding);
+            append_hdu(&mut bytes, &header, &data, padding)?;
         }
 
         Ok(bytes)
@@ -243,7 +243,14 @@ impl DataPadding {
 ///
 /// The header is rendered last, because its CHECKSUM card covers the padded data
 /// as well as the header itself.
-fn append_hdu(bytes: &mut Vec<u8>, header: &Header, data: &[u8], padding: DataPadding) {
+fn append_hdu(
+    bytes: &mut Vec<u8>,
+    header: &Header,
+    data: &[u8],
+    padding: DataPadding,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    header.validate_against_data(data.len())?;
+
     let mut data = data.to_vec();
     let overhang = data.len() % BLOCK_NUM_BYTES;
     if overhang != 0 {
@@ -252,4 +259,6 @@ fn append_hdu(bytes: &mut Vec<u8>, header: &Header, data: &[u8], padding: DataPa
 
     bytes.extend_from_slice(&header.checksummed_bytes(&data));
     bytes.extend_from_slice(&data);
+
+    Ok(())
 }

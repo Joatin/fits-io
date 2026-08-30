@@ -130,10 +130,11 @@ fn a_column_after_a_bit_column_reads_at_the_right_offset() -> TestResult {
     let table = read_table("bit-offset.fits", &[("bits", "16X"), ("after", "1J")], &row)?;
     let row = table.row(0).expect("the table has one row");
 
-    let Some(Value::Bit(bits)) = row.get("bits")? else {
+    let Some(Value::Bit { bytes, len }) = row.get("bits")? else {
         panic!("expected a bit column");
     };
-    assert_eq!(bits, vec![0b1010_1010, 0b0101_0101]);
+    assert_eq!(bytes, vec![0b1010_1010, 0b0101_0101]);
+    assert_eq!(len, 16);
 
     let Some(Value::I32(after)) = row.get("after")? else {
         panic!("expected an i32 column");
@@ -204,6 +205,132 @@ fn a_variable_length_column_takes_only_its_descriptor_from_the_row() -> TestResu
     assert!(
         matches!(row.get("after")?, Some(Value::I32(ref v)) if v == &[7]),
         "the column after a variable length array must still line up"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn a_table_can_be_built_a_row_at_a_time() -> TestResult {
+    use fits_io::bin_table::FieldDefinition;
+    use fits_io::header::TableColumnFormat;
+
+    // Not every column has a Rust type that maps onto it, so there has to be a
+    // way to build a table without going through serde. A complex column is the
+    // clearest example.
+    let mut table = BinTable::new(vec![
+        FieldDefinition {
+            format: TableColumnFormat::C32(1),
+            offset: 0,
+            name: "AMPLITUDE".to_string(),
+            scale: None,
+            zero: None,
+            null: None,
+            dimensions: Vec::new(),
+        },
+        FieldDefinition {
+            format: TableColumnFormat::I32(1),
+            offset: 8,
+            name: "COUNT".to_string(),
+            scale: None,
+            zero: None,
+            null: None,
+            dimensions: Vec::new(),
+        },
+    ]);
+
+    table.push_row(&[Value::C32(vec![(1.5, -2.5)]), Value::I32(vec![7])])?;
+    table.push_row(&[Value::C32(vec![(0.0, 1.0)]), Value::I32(vec![8])])?;
+
+    assert_eq!(table.len(), 2);
+
+    let row = table.row(0).expect("two rows");
+    assert!(
+        matches!(row.get("AMPLITUDE")?, Some(Value::C32(ref v)) if v == &[(1.5, -2.5)]),
+        "got {:?}",
+        row.get("AMPLITUDE")?
+    );
+    assert!(
+        matches!(row.get("COUNT")?, Some(Value::I32(ref v)) if v == &[7]),
+        "got {:?}",
+        row.get("COUNT")?
+    );
+
+    let row = table.row(1).expect("two rows");
+    assert!(
+        matches!(row.get("AMPLITUDE")?, Some(Value::C32(ref v)) if v == &[(0.0, 1.0)]),
+        "got {:?}",
+        row.get("AMPLITUDE")?
+    );
+
+    Ok(())
+}
+
+#[test]
+fn a_row_with_the_wrong_number_of_values_is_rejected() -> TestResult {
+    use fits_io::bin_table::FieldDefinition;
+    use fits_io::header::TableColumnFormat;
+
+    let mut table = BinTable::new(vec![
+        FieldDefinition {
+            format: TableColumnFormat::I32(1),
+            offset: 0,
+            name: "A".to_string(),
+            scale: None,
+            zero: None,
+            null: None,
+            dimensions: Vec::new(),
+        },
+        FieldDefinition {
+            format: TableColumnFormat::I32(1),
+            offset: 4,
+            name: "B".to_string(),
+            scale: None,
+            zero: None,
+            null: None,
+            dimensions: Vec::new(),
+        },
+    ]);
+
+    let error = table
+        .push_row(&[Value::I32(vec![1])])
+        .expect_err("a row must have one value per column");
+
+    assert!(error.to_string().contains("2 columns"), "got: {error}");
+
+    Ok(())
+}
+
+#[test]
+fn a_bit_column_reads_out_its_individual_bits() -> TestResult {
+    // `rX` keeps its bits packed, and the padding in the last byte is not part
+    // of the column: a 12-bit column has 12 bits, not 16.
+    let table = read_table(
+        "bits.fits",
+        &[("flags", "12X"), ("after", "1J")],
+        &[0b1010_0000, 0b1100_0000, 0, 0, 0, 7],
+    )?;
+
+    let row = table.row(0).expect("one row");
+
+    let Some(value) = row.get("flags")? else {
+        panic!("the column exists");
+    };
+    let bits: Vec<bool> = value.bits().expect("a bit column").collect();
+
+    assert_eq!(bits.len(), 12);
+    assert_eq!(
+        bits,
+        vec![
+            true, false, true, false, false, false, false, false, true, true, false, false
+        ]
+    );
+
+    // And the column after it still lines up.
+    assert!(
+        matches!(row.get("after")?, Some(Value::I32(ref v)) if v == &[7]),
+        "got {:?}",
+        row.get("after")?
     );
 
     Ok(())

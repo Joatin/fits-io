@@ -1,4 +1,4 @@
-use crate::bin_table::{FieldDefinition, Row};
+use crate::bin_table::{FieldDefinition, Row, Value};
 use crate::header::Header;
 #[cfg(feature = "rayon")]
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -17,6 +17,45 @@ pub struct BinTable {
 }
 
 impl BinTable {
+    /// Appends a row, one value per column.
+    ///
+    /// This is how to build a table without going through `serde` — for a
+    /// complex column, say, which no Rust type maps onto on its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `values` is not one per column: a short row would
+    /// leave the columns after it holding whatever the padding happened to be.
+    pub fn push_row(&mut self, values: &[Value]) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if values.len() != self.field_definitions.len() {
+            return Err(format!(
+                "This table has {} columns, but the row has {} values",
+                self.field_definitions.len(),
+                values.len()
+            )
+            .into());
+        }
+
+        // The columns were measured when the table was made, so a row is always
+        // the same width.
+        if self.bytes_per_row == 0 {
+            self.bytes_per_row = self
+                .field_definitions
+                .iter()
+                .map(|field| field.format.bytes_len())
+                .sum();
+        }
+
+        for (field, value) in self.field_definitions.iter().zip(values) {
+            crate::bin_table::encode::encode(value, field.format, &mut self.data);
+        }
+
+        self.rows += 1;
+        self.heap_offset = self.data.len();
+
+        Ok(())
+    }
+
     /// An empty table with the given columns.
     pub fn new(field_definitions: Vec<FieldDefinition>) -> Self {
         Self {

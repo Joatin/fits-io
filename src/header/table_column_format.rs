@@ -248,7 +248,10 @@ impl TableColumnFormat {
             )),
 
             // The bits stay packed; `r` bits occupy ceil(r / 8) bytes.
-            TableColumnFormat::Bit(_) => Ok(Value::Bit(bytes.to_vec())),
+            TableColumnFormat::Bit(count) => Ok(Value::Bit {
+                bytes: bytes.to_vec(),
+                len: *count,
+            }),
 
             TableColumnFormat::U8(_) => Ok(Value::U8(bytes.to_vec())),
             TableColumnFormat::I8(_) => {

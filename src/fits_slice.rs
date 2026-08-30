@@ -176,7 +176,7 @@ impl Fits for FitsSlice {
             &self.primary_hdu.header().conformed(None),
             self.primary_hdu.data_bytes(),
             0,
-        );
+        )?;
 
         for extension in &self.extension_hdus {
             match extension {
@@ -185,13 +185,13 @@ impl Fits for FitsSlice {
                     &hdu.header().conformed(Some(ExtensionType::Image)),
                     hdu.data_bytes(),
                     0,
-                ),
+                )?,
                 ExtensionHDU::BinTable(hdu) => append_hdu(
                     &mut bytes,
                     &hdu.header().conformed(Some(ExtensionType::BinTable)),
                     hdu.data_bytes(),
                     0,
-                ),
+                )?,
                 // An ASCII table holds characters, and the standard pads it with
                 // the blanks that a character field means, not with zero bytes.
                 ExtensionHDU::AsciiTable(hdu) => append_hdu(
@@ -199,7 +199,7 @@ impl Fits for FitsSlice {
                     &hdu.header().conformed(Some(ExtensionType::AsciiTable)),
                     hdu.data_bytes(),
                     b' ',
-                ),
+                )?,
             }
         }
 
@@ -229,7 +229,14 @@ fn decompress(data: &[u8]) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
 ///
 /// The header is rendered last, because its CHECKSUM card covers the padded data
 /// as well as the header itself.
-fn append_hdu(bytes: &mut Vec<u8>, header: &Header, data: &[u8], padding: u8) {
+fn append_hdu(
+    bytes: &mut Vec<u8>,
+    header: &Header,
+    data: &[u8],
+    padding: u8,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    header.validate_against_data(data.len())?;
+
     let mut data = data.to_vec();
     let overhang = data.len() % BLOCK_NUM_BYTES;
     if overhang != 0 {
@@ -238,4 +245,6 @@ fn append_hdu(bytes: &mut Vec<u8>, header: &Header, data: &[u8], padding: u8) {
 
     bytes.extend_from_slice(&header.checksummed_bytes(&data));
     bytes.extend_from_slice(&data);
+
+    Ok(())
 }

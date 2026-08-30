@@ -264,7 +264,7 @@ fn bytes_of(
     name: &str,
 ) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
     match row.get(name)? {
-        Some(Value::U8(bytes)) | Some(Value::Bit(bytes)) => Ok(bytes),
+        Some(Value::U8(bytes)) | Some(Value::Bit { bytes, .. }) => Ok(bytes),
         Some(Value::Null) | None => Ok(Vec::new()),
         Some(other) => Err(format!("Column {} holds {:?}, not bytes", name, other).into()),
     }

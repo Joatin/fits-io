@@ -10,8 +10,17 @@ pub enum Value {
     StringArray(Vec<String>),
     /// `rL`: `r` logicals.
     Boolean(Vec<bool>),
-    /// `rX`: `r` bits, still packed into `ceil(r / 8)` bytes.
-    Bit(Vec<u8>),
+    /// `rX`: `r` bits, packed into `ceil(r / 8)` bytes.
+    ///
+    /// The bits stay packed because that is how the column stores them; `len`
+    /// says how many of them are real, since the last byte is padded. Use
+    /// [`Value::bits`] to walk them.
+    Bit {
+        /// The bytes the bits are packed into.
+        bytes: Vec<u8>,
+        /// How many bits of them the column actually holds.
+        len: usize,
+    },
     /// `rB`: `r` unsigned bytes.
     U8(Vec<u8>),
     /// `rS`: `r` signed bytes.
@@ -66,6 +75,24 @@ impl Value {
             None
         }
     }
+    /// The bits of an `rX` column, most significant first, or `None` for any
+    /// other column.
+    ///
+    /// The padding in the last byte is left out, so this yields exactly the `r`
+    /// bits the column declares.
+    pub fn bits(&self) -> Option<impl Iterator<Item = bool> + '_> {
+        let Value::Bit { bytes, len } = self else {
+            return None;
+        };
+
+        Some((0..*len).map(move |bit| {
+            let byte = bytes.get(bit / 8).copied().unwrap_or(0);
+
+            // Bit 0 is the top of the first byte.
+            byte & (1 << (7 - bit % 8)) != 0
+        }))
+    }
+
     /// Whether this entry is undefined, per its column's TNULLn card.
     pub fn is_null(&self) -> bool {
         matches!(self, Value::Null)

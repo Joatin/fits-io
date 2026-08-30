@@ -66,6 +66,11 @@ rayon = ["dep:rayon"]
 # Most tests read a file from disk, so they need the `fs` feature. Declaring that
 # here lets `cargo test --no-default-features` run the tests that do not, which
 # is what proves the in-memory reader stands on its own.
+[[bench]]
+name = "decode"
+harness = false
+required-features = ["fs", "serde"]
+
 [[example]]
 name = "open_file"
 required-features = ["fs"]

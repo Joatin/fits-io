@@ -190,8 +190,14 @@ support.
 | `fs`    | ✅      | Read and write FITS files on the filesystem via `FsFits`  |
 | `gzip`  | ✅      | Transparently decompress gzipped files and buffers        |
 | `tokio` | ✅      | Async open and streaming reads                            |
-| `rayon` | ✅      | Parallel binary-table row decoding                        |
+| `rayon` | ✅      | Parallel table row decoding, worth about 4x on a big table |
 | `serde` |         | Convert table rows to and from your own structs           |
+
+## Benchmarks
+
+`cargo bench --features fs,serde,rayon` times opening a file, reading a table
+and decoding its rows, against the Gaia fixture under `tests/`. It reports the
+fastest of several runs and skips when the fixture is absent.
 
 ## Documentation
 
