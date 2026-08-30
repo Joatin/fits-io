@@ -283,8 +283,10 @@ fn words_of(
         Some(Value::I16(values)) => values.into_iter().map(|value| value as u16).collect(),
         Some(Value::U16(values)) => values,
         Some(Value::U8(bytes)) | Some(Value::Bit { bytes, .. }) => bytes
-            .chunks_exact(2)
-            .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u16::from_be_bytes(*pair))
             .collect(),
         Some(Value::Null) | None => Vec::new(),
         Some(other) => {
