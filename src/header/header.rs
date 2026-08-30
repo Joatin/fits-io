@@ -1431,10 +1431,10 @@ impl Header {
         let mut cards = vec![];
 
         while Self::read_block(reader, &mut block)? {
-            for card in block.chunks_exact(CARD_NUM_BYTES) {
-                let card = Card::try_from(
-                    <&[u8; CARD_NUM_BYTES]>::try_from(card).expect("chunks_exact yields 80 bytes"),
-                )?;
+            // `as_chunks` hands back fixed-size arrays, so there is nothing to
+            // convert and no length to assert.
+            for card in block.as_chunks::<CARD_NUM_BYTES>().0 {
+                let card = Card::try_from(card)?;
 
                 let is_end = card == Card::End;
                 cards.push(card);
