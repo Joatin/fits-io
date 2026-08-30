@@ -163,6 +163,30 @@ pub const PREFIX_TZERO_N: &str = "TZERO";
 /// marks beginning of new HDU
 pub const XTENSION: &str = "XTENSION";
 
+/// Marks a table that holds a compressed image.
+pub const ZIMAGE: &str = "ZIMAGE";
+
+/// The BITPIX of the image a compressed table stands for.
+pub const ZBITPIX: &str = "ZBITPIX";
+
+/// The NAXIS of the image a compressed table stands for.
+pub const ZNAXIS: &str = "ZNAXIS";
+
+/// Prefix of the ZNAXISn cards.
+pub const PREFIX_ZNAXIS_N: &str = "ZNAXIS";
+
+/// Prefix of the ZTILEn cards.
+pub const PREFIX_ZTILE_N: &str = "ZTILE";
+
+/// The compression algorithm the tiles were written with.
+pub const ZCMPTYPE: &str = "ZCMPTYPE";
+
+/// Prefix of the ZNAMEn cards, which name a compression parameter.
+pub const PREFIX_ZNAME_N: &str = "ZNAME";
+
+/// Prefix of the ZVALn cards, which give a compression parameter's value.
+pub const PREFIX_ZVAL_N: &str = "ZVAL";
+
 //////////////////////
 // ADDITIONAL CARDS //
 //////////////////////

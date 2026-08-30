@@ -2,6 +2,7 @@ use crate::bin_table::BinTable;
 #[cfg(feature = "tokio")]
 use crate::bin_table::OwnedRow;
 use crate::hdu::HDU;
+use crate::image::Image;
 #[cfg(feature = "serde")]
 use serde::Serialize;
 #[cfg(feature = "serde")]
@@ -22,6 +23,35 @@ pub trait BinTableHDU: HDU + fmt::Debug + Send + Sync {
     fn read_rows<T: DeserializeOwned + Send + Sync>(
         &self,
     ) -> Result<Vec<T>, Box<dyn Error + Send + Sync>>;
+
+    /// Whether this table holds a compressed image rather than a table of its
+    /// own.
+    ///
+    /// See [`BinTableHDU::read_compressed_image`].
+    fn is_compressed_image(&self) -> bool {
+        self.header().is_compressed_image()
+    }
+
+    /// Decompresses the image this table stands for.
+    ///
+    /// The tiled image convention stores an image as a table, one compressed
+    /// tile per row, which is how `fpack` and most archives distribute large
+    /// images. `None` when this is an ordinary table.
+    ///
+    /// RICE_1, GZIP_1, GZIP_2 and NOCOMPRESS are supported; another algorithm is
+    /// an error rather than an image made of noise.
+    fn read_compressed_image(&self) -> Result<Option<Image>, Box<dyn Error + Send + Sync>> {
+        if !self.is_compressed_image() {
+            return Ok(None);
+        }
+
+        let table = self.read_table()?;
+
+        Ok(Some(crate::image::compression::read_image(
+            self.header(),
+            &table,
+        )?))
+    }
 
     /// Replaces this HDU's table.
     ///

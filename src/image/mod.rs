@@ -1,5 +1,6 @@
 //! Struct for working with fits images
 
+pub(crate) mod compression;
 mod group;
 mod image;
 mod image_data;

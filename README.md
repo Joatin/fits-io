@@ -16,6 +16,7 @@ portability and safety matter.
 * 🧩 Support for Primary HDUs and extensions
 * 🖼️ Image HDUs of any dimensionality, cubes and hypercubes included
 * 📊 Binary and ASCII tables alike, with optional `serde` support in both directions
+* 🗜️ Tile-compressed images, as `fpack` and the archives distribute them
 * 🌍 World coordinate helpers: pixels to sky positions and back
 * 🧠 Typed access to FITS header keywords
 * 🚀 Streaming and memory-efficient reads
@@ -232,7 +233,7 @@ enabled so the `serde`, `tokio` and `gzip` parts are visible.
 | WCS helpers                   | ✅      | `CDi_j`, `PCi_j` and `CDELTn`/`CROTAn`; linear and `TAN` |
 | CHECKSUM and DATASUM          | ✅      | Written on save; `checksum::verify` checks an HDU        |
 | Random groups                 | ✅      | `group_count` and `read_group`, with PSCALn and PZEROn   |
-| Compressed image extensions   | 🚧     | The tiled-compression convention is not implemented      |
+| Compressed image extensions   | ✅      | Tiled `RICE_1`, `GZIP_1`, `GZIP_2` and `NOCOMPRESS`      |
 
 ## License
 

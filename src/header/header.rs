@@ -17,6 +17,50 @@ pub(crate) const CARD_NUM_BYTES: usize = 80;
 /// sections are both padded up to a whole number of them.
 pub(crate) const BLOCK_NUM_BYTES: usize = 2880;
 
+/// Whether a keyword describes the table a compressed image is stored in, rather
+/// than the image itself.
+///
+/// The `Z` keywords describe the image and are translated; the table's own
+/// structural keywords, and the column definitions, have no meaning once the
+/// image is unpacked.
+fn describes_the_table(key: &str) -> bool {
+    const STRUCTURAL: [&str; 6] = [
+        card_keys::XTENSION,
+        card_keys::BITPIX,
+        card_keys::NAXIS,
+        card_keys::PCOUNT,
+        card_keys::GCOUNT,
+        card_keys::TFIELDS,
+    ];
+
+    const COLUMN_PREFIXES: [&str; 9] = [
+        card_keys::PREFIX_TFORM_N,
+        card_keys::PREFIX_TTYPE_N,
+        card_keys::PREFIX_TSCAL_N,
+        card_keys::PREFIX_TZERO_N,
+        card_keys::PREFIX_TNULL_N,
+        card_keys::PREFIX_TDIM_N,
+        card_keys::PREFIX_TUNIT_N,
+        card_keys::PREFIX_TDISP_N,
+        card_keys::PREFIX_TBCOL_N,
+    ];
+
+    if STRUCTURAL.contains(&key) {
+        return true;
+    }
+
+    // Every `Z` keyword either describes the compression or restates a card that
+    // `uncompressed` writes fresh, so none of them belong to the image.
+    if key.starts_with('Z') {
+        return true;
+    }
+
+    COLUMN_PREFIXES.iter().any(|prefix| {
+        key.strip_prefix(prefix)
+            .is_some_and(|index| !index.is_empty() && index.chars().all(|c| c.is_ascii_digit()))
+    })
+}
+
 /// What a CHECKSUM card holds while the checksum that will replace it is being
 /// computed.
 ///
@@ -1064,6 +1108,142 @@ impl Header {
         };
 
         bytes
+    }
+
+    /// Whether this HDU is an image stored compressed inside a table.
+    ///
+    /// The tiled image convention keeps a compressed image in a binary table,
+    /// one tile per row, and describes the image it stands for with keywords
+    /// beginning `Z`. Such an HDU reads as a table unless it is decompressed;
+    /// see [`BinTableHDU::read_compressed_image`](crate::hdu::BinTableHDU::read_compressed_image).
+    pub fn is_compressed_image(&self) -> bool {
+        matches!(
+            self.raw_card(card_keys::ZIMAGE).first(),
+            Some(Value::Logical { value: true, .. })
+        )
+    }
+
+    /// The ZBITPIX card: the type of the values in the image once decompressed.
+    pub fn compressed_bitpix(&self) -> Option<Bitpix> {
+        Bitpix::try_from(self.z_integer(card_keys::ZBITPIX)?).ok()
+    }
+
+    /// The ZNAXIS card: how many axes the decompressed image has.
+    pub fn compressed_naxis(&self) -> Option<i64> {
+        self.z_integer(card_keys::ZNAXIS)
+    }
+
+    /// The ZNAXISn card for axis `index`: the decompressed image's length along
+    /// it. `index` counts from 0.
+    pub fn compressed_naxis_n(&self, index: usize) -> Option<i64> {
+        self.z_integer(&format!("{}{}", card_keys::PREFIX_ZNAXIS_N, index + 1))
+    }
+
+    /// The ZTILEn card for axis `index`: how far a tile reaches along it.
+    ///
+    /// The convention's default is a tile one row of the image wide, which is
+    /// what a header that leaves the card out means.
+    pub fn compressed_tile_size(&self, index: usize) -> i64 {
+        if let Some(size) = self.z_integer(&format!("{}{}", card_keys::PREFIX_ZTILE_N, index + 1)) {
+            return size;
+        }
+
+        match index {
+            0 => self.compressed_naxis_n(0).unwrap_or(1),
+            _ => 1,
+        }
+    }
+
+    /// The ZCMPTYPE card: which algorithm the tiles were compressed with.
+    pub fn compression_type(&self) -> Option<&str> {
+        self.cards.iter().find_map(|card| match card {
+            Card::Value {
+                name,
+                value: Value::String { value, .. },
+            } if name == card_keys::ZCMPTYPE => Some(value.as_str()),
+            _ => None,
+        })
+    }
+
+    /// A compression parameter, looked up by the name a ZNAMEn card gives it.
+    ///
+    /// The algorithms take their settings as name and value pairs rather than as
+    /// keywords of their own, so Rice's block size arrives as `ZNAME1 =
+    /// 'BLOCKSIZE'` with the value in `ZVAL1`.
+    pub fn compression_parameter(&self, name: &str) -> Option<i64> {
+        for index in 1.. {
+            let key = format!("{}{}", card_keys::PREFIX_ZNAME_N, index);
+            let found = self.cards.iter().find_map(|card| match card {
+                Card::Value {
+                    name: key_name,
+                    value: Value::String { value, .. },
+                } if *key_name == key => Some(value.clone()),
+                _ => None,
+            });
+
+            let found = found?;
+
+            if found.trim() == name {
+                return self.z_integer(&format!("{}{}", card_keys::PREFIX_ZVAL_N, index));
+            }
+        }
+
+        None
+    }
+
+    /// One of the `Z` keywords as an integer.
+    ///
+    /// None of them are among the keywords this crate models individually, so
+    /// they arrive as plain value cards and are looked up by name.
+    fn z_integer(&self, key: &str) -> Option<i64> {
+        self.raw_card(key)
+            .into_iter()
+            .find_map(|value| match value {
+                Value::Integer { value, .. } => Some(value),
+                Value::Float { value, .. } => Some(value as i64),
+                _ => None,
+            })
+    }
+
+    /// The header the decompressed image would have.
+    ///
+    /// Every card that describes the table rather than the image is dropped, and
+    /// BITPIX and the NAXISn cards are taken from their `Z` counterparts, so
+    /// that the result describes the image the HDU stands for. Anything else the
+    /// header carried — WCS keywords especially — comes across untouched.
+    pub fn uncompressed(&self) -> Self {
+        let mut header = Self {
+            cards: self
+                .cards
+                .iter()
+                .filter(|card| !describes_the_table(&card.key()))
+                .cloned()
+                .collect(),
+        };
+
+        header.remove_prefixed(card_keys::PREFIX_NAXIS_N);
+
+        if let Some(bitpix) = self.compressed_bitpix() {
+            header.set(Card::Bitpix {
+                value: bitpix,
+                comment: None,
+            });
+        }
+
+        let axes = self.compressed_naxis().unwrap_or(0).max(0);
+        header.set(Card::NAxis {
+            value: axes,
+            comment: None,
+        });
+        for axis in 0..axes as usize {
+            header.set(Card::NAxisN {
+                index: axis,
+                value: self.compressed_naxis_n(axis).unwrap_or(0),
+                comment: None,
+            });
+        }
+
+        header
     }
 
     /// Whether this HDU uses the random-groups convention.
