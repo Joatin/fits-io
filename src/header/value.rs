@@ -1,29 +1,62 @@
 use crate::header::card::Card;
 use crate::header::table_null_value::TableNullValue;
 
+/// The value a header card carries, with the comment written beside it.
+///
+/// FITS gives a card one of four kinds of value — an integer, a floating point
+/// number, a logical `T`/`F`, or a quoted string — or no value at all. Build one
+/// from the Rust type it corresponds to and hand it to [`Header::set_card`]:
+///
+/// ```
+/// # use fits_io::header::{Header, Value};
+/// # fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+/// let mut header = Header::default();
+/// header.set_card("FILTER", "Halpha")?;
+/// header.set_card("GAIN", Value::from(1.5).with_comment("e-/ADU"))?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// [`Header::set_card`]: crate::header::Header::set_card
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
+    /// A whole number, written right-justified against column 30.
     Integer {
+        /// The number itself.
         value: i64,
+        /// The comment after the value, if the card carried one.
         comment: Option<String>,
     },
+    /// A floating point number, written right-justified against column 30.
     Float {
+        /// The number itself.
         value: f64,
+        /// The comment after the value, if the card carried one.
         comment: Option<String>,
     },
+    /// A logical, written as the single character `T` or `F`.
     Logical {
+        /// The truth of it.
         value: bool,
+        /// The comment after the value, if the card carried one.
         comment: Option<String>,
     },
+    /// Text, written in single quotes with any quote inside it doubled.
     String {
+        /// The text, unquoted and with its doubled quotes read back as one.
         value: String,
+        /// The comment after the value, if the card carried one.
         comment: Option<String>,
     },
+    /// A keyword written with an empty value field, which the standard allows.
     Undefined,
+    /// A value field this crate could not read, kept as the text it held so
+    /// that nothing is lost.
     Invalid(String),
 }
 
 impl Value {
+    /// The comment beside this value, or an empty string where there is none.
     pub fn comment_to_string(&self) -> String {
         let comment = match self {
             Value::Integer { comment, .. } => comment,
@@ -41,6 +74,9 @@ impl Value {
         }
     }
 
+    /// This value as the text a card writes it as, without its quotes.
+    ///
+    /// An undefined or unreadable value has no text, and comes back empty.
     pub fn value_to_string(&self) -> String {
         match self {
             Value::Integer { value, .. } => {
@@ -192,6 +228,111 @@ impl From<Card> for Value {
             Card::SiteLatitude { value, comment } => Value::Float { value, comment },
             Card::ImageWidth { value, comment } => Value::Integer { value, comment },
             Card::ImageHeight { value, comment } => Value::Integer { value, comment },
+        }
+    }
+}
+
+/// The comment on a value, replaced rather than merged.
+impl Value {
+    /// This value carrying `comment` beside it.
+    ///
+    /// A comment on an [`Value::Undefined`] or [`Value::Invalid`] value has
+    /// nowhere to live and is dropped: neither of them is written with a value
+    /// field for a comment to follow.
+    #[must_use]
+    pub fn with_comment(self, comment: impl Into<String>) -> Self {
+        let comment = Some(comment.into());
+        match self {
+            Value::Integer { value, .. } => Value::Integer { value, comment },
+            Value::Float { value, .. } => Value::Float { value, comment },
+            Value::Logical { value, .. } => Value::Logical { value, comment },
+            Value::String { value, .. } => Value::String { value, comment },
+            other => other,
+        }
+    }
+}
+
+impl From<i64> for Value {
+    fn from(value: i64) -> Self {
+        Value::Integer {
+            value,
+            comment: None,
+        }
+    }
+}
+
+impl From<i32> for Value {
+    fn from(value: i32) -> Self {
+        Value::from(i64::from(value))
+    }
+}
+
+impl From<u32> for Value {
+    fn from(value: u32) -> Self {
+        Value::from(i64::from(value))
+    }
+}
+
+impl From<usize> for Value {
+    fn from(value: usize) -> Self {
+        // A count that will not fit in a FITS integer is saturated rather than
+        // wrapped, which would write a negative length.
+        Value::from(i64::try_from(value).unwrap_or(i64::MAX))
+    }
+}
+
+impl From<f64> for Value {
+    fn from(value: f64) -> Self {
+        Value::Float {
+            value,
+            comment: None,
+        }
+    }
+}
+
+impl From<f32> for Value {
+    fn from(value: f32) -> Self {
+        Value::from(f64::from(value))
+    }
+}
+
+impl From<bool> for Value {
+    fn from(value: bool) -> Self {
+        Value::Logical {
+            value,
+            comment: None,
+        }
+    }
+}
+
+impl From<String> for Value {
+    fn from(value: String) -> Self {
+        Value::String {
+            value,
+            comment: None,
+        }
+    }
+}
+
+impl From<&str> for Value {
+    fn from(value: &str) -> Self {
+        Value::from(value.to_string())
+    }
+}
+
+impl From<&String> for Value {
+    fn from(value: &String) -> Self {
+        Value::from(value.clone())
+    }
+}
+
+/// An absent value is an undefined one: the keyword is written with an empty
+/// value field, which is how FITS spells "this card has no value".
+impl<T: Into<Value>> From<Option<T>> for Value {
+    fn from(value: Option<T>) -> Self {
+        match value {
+            Some(value) => value.into(),
+            None => Value::Undefined,
         }
     }
 }

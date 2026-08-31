@@ -1639,7 +1639,26 @@ impl Card {
     /// left-justified — followed by ` / ` and the comment if there is room for
     /// one.
     pub fn to_bytes(&self) -> [u8; CARD_NUM_BYTES] {
-        let text = match self {
+        let mut bytes = [b' '; CARD_NUM_BYTES];
+        for (slot, byte) in bytes.iter_mut().zip(self.text().bytes()) {
+            *slot = byte;
+        }
+        bytes
+    }
+
+    /// How many bytes this card would like to occupy, which is more than
+    /// [`CARD_NUM_BYTES`] for a value too long to fit.
+    ///
+    /// [`Card::to_bytes`] truncates such a card, so a caller writing a value of
+    /// its own checks here first rather than writing a card that says something
+    /// other than what it was given.
+    pub(crate) fn text_len(&self) -> usize {
+        self.text().len()
+    }
+
+    /// This card as the text of the one card it renders to, before padding.
+    fn text(&self) -> String {
+        match self {
             Card::End => card_keys::END.to_string(),
             Card::Space => String::new(),
 
@@ -1664,13 +1683,7 @@ impl Card {
             ),
 
             card => format_value_card(&card.key(), &Value::from(card)),
-        };
-
-        let mut bytes = [b' '; CARD_NUM_BYTES];
-        for (slot, byte) in bytes.iter_mut().zip(text.bytes()) {
-            *slot = byte;
         }
-        bytes
     }
 
     /// The string this card holds, so that a continuation can be appended to

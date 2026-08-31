@@ -187,6 +187,15 @@ pub const PREFIX_ZNAME_N: &str = "ZNAME";
 /// Prefix of the ZVALn cards, which give a compression parameter's value.
 pub const PREFIX_ZVAL_N: &str = "ZVAL";
 
+/// The ZQUANTIZ card, naming how a floating point image was quantised.
+pub const ZQUANTIZ: &str = "ZQUANTIZ";
+
+/// The ZDITHER0 card, the seed the dithering started from.
+pub const ZDITHER0: &str = "ZDITHER0";
+
+/// The ZBLANK card, the quantised value standing for an undefined pixel.
+pub const ZBLANK: &str = "ZBLANK";
+
 //////////////////////
 // ADDITIONAL CARDS //
 //////////////////////

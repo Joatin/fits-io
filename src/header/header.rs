@@ -109,6 +109,47 @@ fn describes_the_table(key: &str) -> bool {
 /// would leave the result short by the difference.
 const BLANK_CHECKSUM: &str = "0000000000000000";
 
+/// Splits free text into the pieces a run of COMMENT or HISTORY cards holds.
+///
+/// The keyword takes the first eight columns, so seventy-two are left for the
+/// text. A line of its own in the text stays a line of its own, and anything
+/// longer than a card runs on to the next one.
+fn comment_lines(text: &str) -> Vec<String> {
+    const ROOM: usize = CARD_NUM_BYTES - 8;
+
+    let mut lines = Vec::new();
+
+    for line in text.lines() {
+        let mut rest = line;
+
+        loop {
+            if rest.len() <= ROOM {
+                lines.push(rest.to_string());
+                break;
+            }
+
+            // Breaking on a space keeps words whole; a word longer than a card
+            // is broken wherever it has to be.
+            let mut at = rest[..=ROOM]
+                .rfind(char::is_whitespace)
+                .unwrap_or(ROOM)
+                .max(1);
+            while !rest.is_char_boundary(at) {
+                at -= 1;
+            }
+
+            lines.push(rest[..at].trim_end().to_string());
+            rest = rest[at..].trim_start();
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+
+    lines
+}
+
 /// A FITS header: the cards that describe an HDU and its data.
 #[derive(Clone, Default)]
 pub struct Header {
@@ -1255,6 +1296,43 @@ impl Header {
         None
     }
 
+    /// The ZQUANTIZ card: how a floating point image's values were turned into
+    /// the integers the compressor works on.
+    ///
+    /// `NO_DITHER` quantises plainly; the two `SUBTRACTIVE_DITHER` methods add a
+    /// known pseudo-random number to each value before rounding it and take the
+    /// same number off again on the way back, which keeps quantisation from
+    /// laying a pattern over a smooth background.
+    pub fn quantization_method(&self) -> Option<&str> {
+        self.z_string(card_keys::ZQUANTIZ)
+    }
+
+    /// The ZDITHER0 card: which entry of the dithering sequence the first tile
+    /// starts at.
+    pub fn dither_seed(&self) -> Option<i64> {
+        self.z_integer(card_keys::ZDITHER0)
+    }
+
+    /// The ZBLANK card: the quantised value that stands for a pixel the image
+    /// does not define.
+    ///
+    /// A tile may carry its own ZBLANK column instead, which takes precedence
+    /// over this for that tile.
+    pub fn compressed_blank(&self) -> Option<i64> {
+        self.z_integer(card_keys::ZBLANK)
+    }
+
+    /// One of the `Z` keywords as a string.
+    fn z_string(&self, key: &str) -> Option<&str> {
+        self.cards.iter().find_map(|card| match card {
+            Card::Value {
+                name,
+                value: Value::String { value, .. },
+            } if name == key => Some(value.as_str()),
+            _ => None,
+        })
+    }
+
     /// One of the `Z` keywords as an integer.
     ///
     /// None of them are among the keywords this crate models individually, so
@@ -1707,6 +1785,263 @@ impl Header {
                 }
             })
             .collect()
+    }
+
+    /// The value of the card with the keyword `key`, if there is one.
+    ///
+    /// Where a keyword repeats — COMMENT and HISTORY do, and an unrecognised one
+    /// may — this is the first of them; [`Header::raw_card`] returns them all.
+    ///
+    /// ```
+    /// # use fits_io::header::Header;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    /// let mut header = Header::default();
+    /// header.set_card("OBJECT", "M31")?;
+    ///
+    /// assert_eq!(header.card("OBJECT").map(|v| v.value_to_string()), Some("M31".into()));
+    /// assert!(header.card("MISSING").is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn card(&self, key: &str) -> Option<Value> {
+        self.cards
+            .iter()
+            .find(|card| card.key() == key)
+            .map(Value::from)
+    }
+
+    /// Whether this header carries a card with the keyword `key`.
+    pub fn contains_card(&self, key: &str) -> bool {
+        self.cards.iter().any(|card| card.key() == key)
+    }
+
+    /// Every keyword this header holds, in the order the cards are in.
+    ///
+    /// A repeated keyword appears once per card, and the blank keyword of a
+    /// COMMENT-style card with no keyword appears as an empty string.
+    pub fn card_keys(&self) -> impl Iterator<Item = String> + '_ {
+        self.cards
+            .iter()
+            .filter(|card| **card != Card::End)
+            .map(Card::key)
+    }
+
+    /// Sets the card with the keyword `key` to `value`, adding it if the header
+    /// does not already have one.
+    ///
+    /// The value may be any of the types a FITS card can hold — an integer, a
+    /// float, a bool, a string, or `None` for a keyword written with no value —
+    /// and [`Value::with_comment`] puts a comment beside it.
+    ///
+    /// A keyword of up to eight characters drawn from `A`–`Z`, `0`–`9`, `-` and
+    /// `_` is written as an ordinary card, upper-cased on the way in. A longer
+    /// or otherwise unconventional keyword is written with the `HIERARCH`
+    /// convention, which keeps its case. Setting a keyword this crate reads
+    /// through one of its typed accessors — `OBJECT`, `DATE-OBS`, `BUNIT` and
+    /// the rest — leaves that accessor returning the new value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a keyword that is empty, holds characters a card
+    /// cannot carry, or is one of the repeatable and structural keywords that
+    /// have setters of their own: use [`Header::add_comment`],
+    /// [`Header::add_history`] and [`Header::set_naxis_n`] for those. Also
+    /// returns an error when the value is too long for the one card it has to
+    /// fit on — a long *string* is written across CONTINUE cards instead and is
+    /// never too long.
+    ///
+    /// ```
+    /// # use fits_io::header::{Header, Value};
+    /// # fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    /// let mut header = Header::default();
+    ///
+    /// header.set_card("OBJECT", "NGC 7000")?;
+    /// header.set_card("EXPTIME", Value::from(120.0).with_comment("seconds"))?;
+    /// header.set_card("MOONLIT", true)?;
+    ///
+    /// // A keyword too long for the eight columns a card gives it becomes a
+    /// // HIERARCH card.
+    /// header.set_card("ESO INS FILT1 NAME", "Halpha")?;
+    ///
+    /// assert_eq!(header.object(), Some("NGC 7000"));
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn set_card(
+        &mut self,
+        key: &str,
+        value: impl Into<Value>,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        self.set(Self::card_for(key, value.into())?);
+        Ok(())
+    }
+
+    /// Removes every card with the keyword `key`, and says how many went.
+    ///
+    /// A mandatory card removed this way comes back when the header is written:
+    /// SIMPLE, BITPIX, NAXIS and the rest are filled in from the data whatever
+    /// the cards say.
+    pub fn remove_card(&mut self, key: &str) -> usize {
+        let before = self.cards.len();
+        self.cards.retain(|card| card.key() != key);
+        before - self.cards.len()
+    }
+
+    /// Adds a COMMENT card carrying `text`.
+    ///
+    /// COMMENT cards repeat, so this always adds one rather than replacing what
+    /// is there. Text too long for a card is split across as many as it needs.
+    pub fn add_comment(&mut self, text: impl AsRef<str>) {
+        for line in comment_lines(text.as_ref()) {
+            self.push(Card::Comment(line));
+        }
+    }
+
+    /// Adds a HISTORY card carrying `text`.
+    ///
+    /// As with [`Header::add_comment`], this adds rather than replaces, and text
+    /// too long for one card is split across several.
+    pub fn add_history(&mut self, text: impl AsRef<str>) {
+        for line in comment_lines(text.as_ref()) {
+            self.push(Card::History(line));
+        }
+    }
+
+    /// The text of every COMMENT card, in order.
+    pub fn comments(&self) -> impl Iterator<Item = &str> {
+        self.cards.iter().filter_map(|card| match card {
+            Card::Comment(text) => Some(text.as_str()),
+            _ => None,
+        })
+    }
+
+    /// The text of every HISTORY card, in order.
+    pub fn history(&self) -> impl Iterator<Item = &str> {
+        self.cards.iter().filter_map(|card| match card {
+            Card::History(text) => Some(text.as_str()),
+            _ => None,
+        })
+    }
+
+    /// The card `key` and `value` should be written as.
+    ///
+    /// A keyword the fixed format can hold becomes an ordinary card, and one it
+    /// cannot becomes a HIERARCH card.
+    fn card_for(key: &str, value: Value) -> Result<Card, Box<dyn Error + Send + Sync>> {
+        const RESERVED: [&str; 5] = [
+            card_keys::COMMENT,
+            card_keys::HISTORY,
+            card_keys::END,
+            "CONTINUE",
+            "HIERARCH",
+        ];
+
+        let key = key.trim();
+
+        if key.is_empty() {
+            return Err("A card needs a keyword, and this one is empty".into());
+        }
+
+        let upper = key.to_ascii_uppercase();
+
+        if RESERVED.contains(&upper.as_str()) {
+            return Err(format!(
+                "{} cards are not set by keyword: use add_comment, add_history, or let the \
+                 header write END and CONTINUE itself",
+                upper
+            )
+            .into());
+        }
+
+        if upper
+            .strip_prefix(card_keys::PREFIX_NAXIS_N)
+            .is_some_and(|index| !index.is_empty() && index.chars().all(|c| c.is_ascii_digit()))
+        {
+            return Err(format!(
+                "{} says how much data follows the header, so it is set with set_naxis_n and \
+                 checked against the data",
+                upper
+            )
+            .into());
+        }
+
+        if !key.chars().all(|c| (' '..='~').contains(&c)) {
+            return Err(format!(
+                "A FITS keyword holds only printable ASCII, but {:?} does not",
+                key
+            )
+            .into());
+        }
+
+        let conventional = upper.len() <= 8
+            && upper
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-' || c == '_');
+
+        let card = if conventional {
+            Self::specialised(Card::Value { name: upper, value })
+        } else {
+            if key.contains('=') || key.contains('\'') {
+                return Err(format!(
+                    "A HIERARCH keyword cannot hold a quote or an equals sign, but {:?} does",
+                    key
+                )
+                .into());
+            }
+
+            Card::Hierarch {
+                name: key.to_string(),
+                value,
+            }
+        };
+
+        // A string is written across CONTINUE cards when it does not fit, so
+        // only the cards that have to fit on one are measured. A HIERARCH card
+        // has no continuation convention and always has to fit.
+        let continues = matches!(Value::from(&card), Value::String { .. })
+            && !matches!(card, Card::Hierarch { .. });
+
+        if !continues && card.text_len() > CARD_NUM_BYTES {
+            return Err(format!(
+                "{} = {} needs {} bytes, and a card holds {}",
+                card.key(),
+                Value::from(&card).value_to_string(),
+                card.text_len(),
+                CARD_NUM_BYTES
+            )
+            .into());
+        }
+
+        Ok(card)
+    }
+
+    /// The typed card for a keyword this crate knows, or the generic card it was
+    /// given.
+    ///
+    /// The typed accessors match on their own variants, so a card set by keyword
+    /// has to become one of those variants for `header.object()` to see an
+    /// OBJECT that was set by name. Rendering the card and reading it back is
+    /// what the file itself would do, so it produces exactly the variant a
+    /// round trip through a file would. It is only adopted when the value
+    /// survives that trip — a value the fixed format cannot hold keeps the
+    /// generic card, which writes it as given.
+    fn specialised(card: Card) -> Card {
+        match Card::try_from(&card.to_bytes()) {
+            Ok(parsed)
+                if parsed.key() == card.key() && Value::from(&parsed) == Value::from(&card) =>
+            {
+                parsed
+            }
+            _ => card,
+        }
+    }
+
+    /// Adds `card` before the END card, keeping any card with the same keyword.
+    fn push(&mut self, card: Card) {
+        match self.cards.iter().position(|card| card == &Card::End) {
+            Some(end) => self.cards.insert(end, card),
+            None => self.cards.push(card),
+        }
     }
 
     pub(crate) fn from_reader(

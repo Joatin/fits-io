@@ -15,8 +15,13 @@ pub const CARD: usize = 80;
 /// Formats one fixed-format header card: keyword in columns 1-8, `= ` in 9-10,
 /// value right-justified in 11-30.
 pub fn card(keyword: &str, value: &str) -> String {
-    let card = format!("{:<8}= {:>20}{:<50}", keyword, value, "");
-    debug_assert_eq!(card.len(), CARD);
+    // The value is right-justified against column 30 where it fits there, and
+    // simply runs on from column 11 where it does not — a long string value,
+    // say. Either way the card is padded out to its eighty columns.
+    let card = format!("{:<8}= {:>20}", keyword, value);
+    let card = format!("{:<width$}", card, width = CARD);
+
+    debug_assert_eq!(card.len(), CARD, "card {:?} does not fit", keyword);
     card
 }
 

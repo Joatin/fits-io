@@ -87,12 +87,25 @@ impl FsImageHDU {
         (axis(0), axis(1))
     }
 
-    /// Decompresses the image this HDU's table stands for.
-    fn read_compressed(&self) -> Result<Image, Box<dyn Error + Send + Sync>> {
-        let bytes = self.data_bytes()?;
-        let table = crate::bin_table::BinTable::from_u8(&self.header, bytes)?;
+    /// Decompresses the image this HDU's table stands for, and takes plane
+    /// `index` out of it.
+    ///
+    /// The tiles cover the whole array, cube and all, so a cube is decompressed
+    /// once and the plane that was asked for is cut out of the result.
+    fn read_compressed(&self, index: usize) -> Result<Image, Box<dyn Error + Send + Sync>> {
+        let table = crate::bin_table::BinTable::from_u8(&self.header, self.data_bytes()?)?;
+        let (data, image_header) = crate::image::compression::read_data(&self.header, &table)?;
 
-        crate::image::compression::read_image(&self.header, &table)
+        let size = self.image_data_size() as usize;
+        let start = size.saturating_mul(index);
+
+        let plane = data
+            .get(start..)
+            .and_then(|rest| rest.get(..size))
+            .unwrap_or_default()
+            .to_vec();
+
+        Image::from_data_and_header(plane, &image_header)
     }
 
     fn is_image_index_valid(&self, index: usize) -> bool {
@@ -286,7 +299,7 @@ impl ImageHDU for FsImageHDU {
         }
 
         if self.is_compressed() {
-            return Ok(Some(self.read_compressed()?));
+            return Ok(Some(self.read_compressed(index)?));
         }
 
         let bytes = self.image_bytes(index)?;
@@ -401,7 +414,7 @@ impl ImageHDU for FsImageHDU {
         // A compressed image has to be put back together before any of it can
         // be streamed, so there is nothing to gain by reading it in pieces.
         if self.is_compressed() {
-            let image = self.read_compressed()?;
+            let image = self.read_compressed(index)?;
             let normalised = image.normalized();
 
             let pixels: Vec<_> = normalised
@@ -472,5 +485,36 @@ impl ImageHDU for FsImageHDU {
         };
 
         self.images_width() as u64 * self.images_height() as u64 * bitpix.byte_size() as u64
+    }
+
+    fn compress(
+        &mut self,
+        options: &crate::image::compression::CompressionOptions,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        // Compressing what is already compressed would code the tiles a second
+        // time rather than changing how they are coded.
+        self.decompress()?;
+
+        let (header, data) =
+            crate::image::compression::compress_image(&self.header, &self.data_bytes()?, options)?;
+
+        self.header = header;
+        self.pending = Some(data);
+
+        Ok(())
+    }
+
+    fn decompress(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if !self.is_compressed() {
+            return Ok(());
+        }
+
+        let (header, data) =
+            crate::image::compression::decompress_image(&self.header, &self.data_bytes()?)?;
+
+        self.header = header;
+        self.pending = Some(data);
+
+        Ok(())
     }
 }

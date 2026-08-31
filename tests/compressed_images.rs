@@ -357,17 +357,21 @@ fn an_hcompress_image_is_read() -> TestResult {
 }
 
 #[test]
-fn an_hcompress_image_asking_to_be_smoothed_says_so() -> TestResult {
-    // Smoothing changes the pixels. Returning the unsmoothed image would be a
-    // different image from the one the file describes.
+fn an_hcompress_image_asking_to_be_smoothed_is_smoothed() -> TestResult {
+    // This tile was compressed losslessly, so there is nothing for smoothing to
+    // put back and the image must come out exactly as it went in. What is being
+    // checked is that the SMOOTH flag is honoured rather than refused.
     let file = compressed_image(&hcompress_cards("1"), &[HCOMPRESS_GRADIENT]);
     let fits = open("compressed-hcompress-smooth.fits", &file)?;
 
-    let error = image_hdu(&fits)
-        .read_image(0)
-        .expect_err("smoothing is not implemented");
+    let image = image_hdu(&fits)
+        .read_image(0)?
+        .expect("the extension holds an image");
 
-    assert!(error.to_string().contains("smoothed"), "got: {error}");
+    let Image::I32(data) = &image else {
+        panic!("expected a 32-bit image, got {image:?}");
+    };
+    assert_eq!(data.raw(), &(0..64).collect::<Vec<i32>>());
 
     Ok(())
 }
@@ -560,6 +564,213 @@ fn a_plio_mask_with_several_levels_is_read() -> TestResult {
         panic!("expected a 32-bit image, got {image:?}");
     };
     assert_eq!(data.raw(), &[0, 1, 2, 3, 0, 0, 5, 5]);
+
+    Ok(())
+}
+
+/// An 8x8 patch of a noisy gradient, quantised with SUBTRACTIVE_DITHER_1 and
+/// Rice coded by cfitsio through astropy, with the scale and zero point it
+/// chose.
+const DITHERED_TILE: &[u8] = &[
+    0x00, 0x00, 0x00, 0x2d, 0x34, 0x07, 0x61, 0x86, 0xce, 0x1d, 0x46, 0x2a, 0x40, 0x0d, 0x96, 0xa2,
+    0x68, 0xa9, 0x31, 0x41, 0x77, 0xc7, 0x18, 0x3c, 0x10, 0x6d, 0xa3, 0xe2, 0x83, 0xeb, 0xdb, 0x1c,
+    0x4a, 0x48, 0x63, 0xa5, 0x49, 0x09, 0x1b, 0x82, 0xaa, 0x50, 0x0b, 0x88, 0x30, 0x40, 0x6c, 0xc8,
+    0x41, 0xf2, 0x43, 0x0a, 0xbc, 0x12, 0x32, 0xf1, 0x01, 0xa7, 0xe1, 0xb2, 0xcb, 0x45, 0x1a, 0x0a,
+    0x80,
+];
+
+/// What cfitsio gives back for that tile, value for value.
+///
+/// These are the exact `f32` values, written out in full: they are what the
+/// decoder must produce, not values it must come close to.
+#[allow(clippy::excessive_precision)]
+const DITHERED_PIXELS: [f32; 64] = [
+    100.61231994628906,
+    99.72648620605469,
+    101.11946868896484,
+    101.33004760742188,
+    101.86827850341797,
+    102.44025421142578,
+    102.39576721191406,
+    103.42288970947266,
+    103.73676300048828,
+    105.50331115722656,
+    105.05823516845703,
+    105.38787078857422,
+    105.90711212158203,
+    106.2983169555664,
+    106.67451477050781,
+    107.3752212524414,
+    108.14076232910156,
+    108.41962432861328,
+    109.27894592285156,
+    109.43091583251953,
+    110.01355743408203,
+    110.95561218261719,
+    111.1554183959961,
+    111.35071563720703,
+    111.95259857177734,
+    112.65882873535156,
+    113.57994079589844,
+    113.41844940185547,
+    113.93260955810547,
+    114.80259704589844,
+    114.73983001708984,
+    115.40300750732422,
+    116.27352142333984,
+    116.67444610595703,
+    117.03278350830078,
+    117.69288635253906,
+    117.1422348022461,
+    118.80242919921875,
+    118.70825958251953,
+    119.00385284423828,
+    120.08897399902344,
+    120.70149230957031,
+    120.85721588134766,
+    121.18006896972656,
+    122.01558685302734,
+    122.4863510131836,
+    123.419921875,
+    123.71931457519531,
+    124.06715393066406,
+    124.83924102783203,
+    124.93643188476562,
+    125.21769714355469,
+    126.17697143554688,
+    126.66522216796875,
+    126.93492126464844,
+    127.26007843017578,
+    128.076416015625,
+    127.75227355957031,
+    129.21218872070312,
+    129.6477508544922,
+    129.51173400878906,
+    130.52471923828125,
+    130.71304321289062,
+    131.73193359375,
+];
+
+/// Builds a compressed-image extension whose single tile is a quantised
+/// floating point one, with the ZSCALE and ZZERO columns that scale it back.
+fn quantised_image(cards: &[(&str, &str)], tile: &[u8], scale: f64, zero: f64) -> Vec<u8> {
+    let mut rows = Vec::new();
+    rows.extend_from_slice(&(tile.len() as i32).to_be_bytes());
+    rows.extend_from_slice(&0_i32.to_be_bytes());
+    rows.extend_from_slice(&scale.to_be_bytes());
+    rows.extend_from_slice(&zero.to_be_bytes());
+
+    let pcount = tile.len().to_string();
+
+    let mut data = rows;
+    data.extend_from_slice(tile);
+
+    let mut file = fits_file(
+        &[
+            ("SIMPLE", "T"),
+            ("BITPIX", "8"),
+            ("NAXIS", "0"),
+            ("EXTEND", "T"),
+        ],
+        &[],
+    );
+
+    let mut header = vec![
+        ("XTENSION", "'BINTABLE'"),
+        ("BITPIX", "8"),
+        ("NAXIS", "2"),
+        ("NAXIS1", "24"),
+        ("NAXIS2", "1"),
+        ("PCOUNT", pcount.as_str()),
+        ("GCOUNT", "1"),
+        ("TFIELDS", "3"),
+        ("TTYPE1", "'COMPRESSED_DATA'"),
+        ("TFORM1", "'1PB'"),
+        ("TTYPE2", "'ZSCALE'"),
+        ("TFORM2", "'1D'"),
+        ("TTYPE3", "'ZZERO'"),
+        ("TFORM3", "'1D'"),
+        ("ZIMAGE", "T"),
+    ];
+    header.extend_from_slice(cards);
+
+    append_extension(&mut file, &header, &data);
+
+    file
+}
+
+#[test]
+fn a_dithered_floating_point_image_matches_the_reference_implementation() -> TestResult {
+    // Quantisation with subtractive dithering adds a known pseudo-random number
+    // to each value before rounding it, and a reader has to take the same
+    // number off again. Getting the sequence even slightly wrong gives an image
+    // that looks entirely reasonable and is wrong everywhere by a fraction of a
+    // quantisation step.
+    let file = quantised_image(
+        &[
+            ("ZBITPIX", "-32"),
+            ("ZNAXIS", "2"),
+            ("ZNAXIS1", "8"),
+            ("ZNAXIS2", "8"),
+            ("ZTILE1", "8"),
+            ("ZTILE2", "8"),
+            ("ZCMPTYPE", "'RICE_1'"),
+            ("ZNAME1", "'BLOCKSIZE'"),
+            ("ZVAL1", "32"),
+            ("ZNAME2", "'BYTEPIX'"),
+            ("ZVAL2", "4"),
+            ("ZQUANTIZ", "'SUBTRACTIVE_DITHER_1'"),
+            ("ZDITHER0", "100"),
+        ],
+        DITHERED_TILE,
+        0.01943078374328613,
+        99.7382129542877,
+    );
+
+    let fits = open("compressed-dithered.fits", &file)?;
+    let image = image_hdu(&fits)
+        .read_image(0)?
+        .expect("the extension holds an image");
+
+    let Image::F32(data) = &image else {
+        panic!("expected a 32-bit float image, got {image:?}");
+    };
+
+    assert_eq!(data.raw(), &DITHERED_PIXELS);
+
+    Ok(())
+}
+
+#[test]
+fn a_header_asking_for_a_quantisation_this_crate_does_not_know_says_so() -> TestResult {
+    // Undithering with the wrong sequence produces an image that is wrong
+    // everywhere and looks right, which is the worst thing a reader can do.
+    let file = quantised_image(
+        &[
+            ("ZBITPIX", "-32"),
+            ("ZNAXIS", "2"),
+            ("ZNAXIS1", "8"),
+            ("ZNAXIS2", "8"),
+            ("ZTILE1", "8"),
+            ("ZTILE2", "8"),
+            ("ZCMPTYPE", "'RICE_1'"),
+            ("ZNAME1", "'BLOCKSIZE'"),
+            ("ZVAL1", "32"),
+            ("ZNAME2", "'BYTEPIX'"),
+            ("ZVAL2", "4"),
+            ("ZQUANTIZ", "'SOMETHING_ELSE'"),
+        ],
+        DITHERED_TILE,
+        1.0,
+        0.0,
+    );
+
+    let fits = open("compressed-unknown-quantisation.fits", &file)?;
+    let error = image_hdu(&fits)
+        .read_image(0)
+        .expect_err("an unknown quantisation method is not guessed at");
+
+    assert!(error.to_string().contains("SOMETHING_ELSE"), "got: {error}");
 
     Ok(())
 }

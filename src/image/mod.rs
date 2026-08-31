@@ -1,6 +1,7 @@
 //! Struct for working with fits images
 
-pub(crate) mod compression;
+/// Reading and writing images stored tile-compressed inside a table.
+pub mod compression;
 mod group;
 mod image;
 mod image_data;

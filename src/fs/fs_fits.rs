@@ -195,17 +195,38 @@ impl Fits for FsFits {
     fn to_vec(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
         let mut bytes = Vec::new();
 
-        append_hdu(
-            &mut bytes,
-            &self.primary_hdu.header().conformed(None),
-            &self.primary_hdu.data_bytes()?,
-            DataPadding::Zero,
-        )?;
+        // A compressed image lives in a binary table, and the primary HDU of a
+        // FITS file cannot be one. Rather than write a file no reader would
+        // accept, the image goes into the first extension and the primary HDU
+        // is left empty — which is what `fpack` does with the same problem, and
+        // is what this crate reads back as the image it was.
+        if self.primary_hdu.header().is_compressed_image() {
+            append_hdu(&mut bytes, &empty_primary_header(), &[], DataPadding::Zero)?;
+            append_hdu(
+                &mut bytes,
+                &self
+                    .primary_hdu
+                    .header()
+                    .conformed(Some(ExtensionType::BinTable)),
+                &self.primary_hdu.data_bytes()?,
+                DataPadding::Zero,
+            )?;
+        } else {
+            append_hdu(
+                &mut bytes,
+                &self.primary_hdu.header().conformed(None),
+                &self.primary_hdu.data_bytes()?,
+                DataPadding::Zero,
+            )?;
+        }
 
         for extension in &self.extension_hdus {
             let (header, data, padding) = match extension {
+                // A compressed image is written as the table it is stored
+                // as; XTENSION says how to read the bytes, not what they mean.
                 ExtensionHDU::Image(hdu) => (
-                    hdu.header().conformed(Some(ExtensionType::Image)),
+                    hdu.header()
+                        .conformed(Some(extension_type_of(hdu.header()))),
                     hdu.data_bytes()?,
                     DataPadding::Zero,
                 ),
@@ -269,4 +290,28 @@ fn append_hdu(
     bytes.extend_from_slice(&data);
 
     Ok(())
+}
+
+/// Which kind of extension an image HDU is written as.
+///
+/// A tile-compressed image lives in a binary table, and a reader finds it by its
+/// XTENSION before it ever looks at the `Z` keywords that say it is an image.
+fn extension_type_of(header: &Header) -> ExtensionType {
+    if header.is_compressed_image() {
+        ExtensionType::BinTable
+    } else {
+        ExtensionType::Image
+    }
+}
+
+/// The header of a primary HDU holding no data, for a file whose image had to
+/// move into an extension.
+fn empty_primary_header() -> Header {
+    let mut header = Header::default();
+
+    // Without EXTEND, a reader is entitled to stop at the primary HDU and never
+    // look for the extension the image is in.
+    let _ = header.set_card(crate::header::card_keys::EXTEND, true);
+
+    header.conformed(None)
 }

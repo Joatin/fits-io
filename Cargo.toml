@@ -75,6 +75,17 @@ required-features = ["fs", "serde"]
 name = "open_file"
 required-features = ["fs"]
 
+[[example]]
+name = "write_file"
+required-features = ["serde"]
+
+[[example]]
+name = "compress_file"
+required-features = ["gzip"]
+
+[[example]]
+name = "sky_coordinates"
+
 [[test]]
 name = "ascii_table"
 required-features = ["fs"]
@@ -88,6 +99,10 @@ name = "bin_table_columns"
 required-features = ["fs"]
 
 [[test]]
+name = "compress_images"
+required-features = ["gzip"]
+
+[[test]]
 name = "column_scaling"
 required-features = ["fs"]
 
@@ -97,6 +112,10 @@ required-features = ["fs", "serde"]
 
 [[test]]
 name = "extensions"
+required-features = ["fs"]
+
+[[test]]
+name = "header_cards"
 required-features = ["fs"]
 
 [[test]]

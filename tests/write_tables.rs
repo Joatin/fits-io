@@ -3,6 +3,7 @@
 mod common;
 
 use fits_io::bin_table::{Value, from_bin_table, to_bin_table};
+use fits_io::header::TableColumnFormat;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 
@@ -584,4 +585,218 @@ fn a_ragged_nested_array_is_written_without_a_shape() -> TestResult {
     assert!(table.field_definitions()[0].dimensions.is_empty());
 
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+enum Filter {
+    #[serde(rename = "Ha")]
+    HAlpha,
+    #[serde(rename = "OIII")]
+    OxygenThree,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+struct Exposure {
+    #[serde(rename = "FILTER")]
+    filter: Filter,
+    #[serde(rename = "SECONDS")]
+    seconds: f64,
+}
+
+#[test]
+fn an_enum_column_is_written_as_the_name_of_its_variant() -> TestResult {
+    let rows = vec![
+        Exposure {
+            filter: Filter::HAlpha,
+            seconds: 300.0,
+        },
+        Exposure {
+            filter: Filter::OxygenThree,
+            seconds: 600.0,
+        },
+    ];
+
+    let table = to_bin_table(&rows)?;
+
+    // A unit-only enum is text, which is the only thing a column can hold that
+    // carries a name rather than a number.
+    assert_eq!(
+        table.field_definitions()[0].format,
+        TableColumnFormat::String(4)
+    );
+
+    let back: Vec<Exposure> = from_bin_table(&table)?;
+    assert_eq!(back, rows);
+
+    Ok(())
+}
+
+#[test]
+fn an_enum_variant_carrying_a_value_says_why_it_cannot_be_a_column() -> TestResult {
+    #[derive(Serialize)]
+    enum Reading {
+        Measured(f64),
+    }
+
+    #[derive(Serialize)]
+    struct Row {
+        #[serde(rename = "VALUE")]
+        value: Reading,
+    }
+
+    let error = to_bin_table(&vec![Row {
+        value: Reading::Measured(1.0),
+    }])
+    .expect_err("a column holds one value, and a tagged variant is two");
+
+    assert!(error.to_string().contains("untagged"), "got: {error}");
+
+    Ok(())
+}
+
+#[test]
+fn a_row_can_be_a_map_of_column_names_to_values() -> TestResult {
+    use std::collections::BTreeMap;
+
+    let rows: Vec<BTreeMap<&str, f64>> = vec![
+        BTreeMap::from([("RA", 10.5), ("DEC", -20.25)]),
+        BTreeMap::from([("RA", 11.0), ("DEC", -21.0)]),
+    ];
+
+    let table = to_bin_table(&rows)?;
+
+    assert_eq!(table.len(), 2);
+    let names: Vec<&str> = table
+        .field_definitions()
+        .iter()
+        .map(|field| field.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["DEC", "RA"]);
+
+    let row = table.row(1).expect("the table has a second row");
+    assert_eq!(
+        row.get("RA")?.and_then(|v| v.as_f64().cloned()),
+        Some(vec![11.0])
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rows_whose_columns_arrive_in_different_orders_still_make_one_table() -> TestResult {
+    use std::collections::HashMap;
+
+    // A HashMap hands its entries over in whatever order it likes, and two rows
+    // of the same table need not agree on it. They are the same columns.
+    let rows: Vec<HashMap<String, i64>> = (0..8)
+        .map(|index| {
+            HashMap::from([
+                ("A".to_string(), index),
+                ("B".to_string(), index * 2),
+                ("C".to_string(), index * 3),
+            ])
+        })
+        .collect();
+
+    let table = to_bin_table(&rows)?;
+
+    assert_eq!(table.len(), 8);
+    assert_eq!(table.field_definitions().len(), 3);
+
+    for (index, row) in table.rows().enumerate() {
+        let first = table.field_definitions()[0].name.clone();
+        let value = row.get(&first)?.and_then(|v| v.as_i64());
+        let expected = match first.as_str() {
+            "A" => index as i64,
+            "B" => index as i64 * 2,
+            _ => index as i64 * 3,
+        };
+
+        assert_eq!(value, Some(expected), "row {index} column {first}");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn rows_that_really_do_have_different_columns_are_still_refused() {
+    use std::collections::BTreeMap;
+
+    let rows = vec![
+        BTreeMap::from([("A", 1.0), ("B", 2.0)]),
+        BTreeMap::from([("A", 1.0), ("C", 3.0)]),
+    ];
+
+    let error =
+        to_bin_table(&rows).expect_err("a column that only some rows have cannot be written");
+
+    assert!(error.to_string().contains("same columns"), "got: {error}");
+}
+
+#[test]
+fn a_nested_struct_becomes_columns_of_its_own_when_it_is_flattened() -> TestResult {
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Position {
+        #[serde(rename = "RA")]
+        right_ascension: f64,
+        #[serde(rename = "DEC")]
+        declination: f64,
+    }
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Source {
+        #[serde(rename = "NAME")]
+        name: String,
+        #[serde(flatten)]
+        position: Position,
+    }
+
+    let rows = vec![
+        Source {
+            name: "Vega".into(),
+            position: Position {
+                right_ascension: 279.23,
+                declination: 38.78,
+            },
+        },
+        Source {
+            name: "Altair".into(),
+            position: Position {
+                right_ascension: 297.69,
+                declination: 8.87,
+            },
+        },
+    ];
+
+    let table = to_bin_table(&rows)?;
+
+    let names: Vec<&str> = table
+        .field_definitions()
+        .iter()
+        .map(|field| field.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["NAME", "RA", "DEC"]);
+
+    let back: Vec<Source> = from_bin_table(&table)?;
+    assert_eq!(back, rows);
+
+    Ok(())
+}
+
+#[test]
+fn a_map_inside_a_column_says_why_it_cannot_be_one() {
+    use std::collections::BTreeMap;
+
+    #[derive(Serialize)]
+    struct Row {
+        #[serde(rename = "EXTRA")]
+        extra: BTreeMap<String, f64>,
+    }
+
+    let error = to_bin_table(&vec![Row {
+        extra: BTreeMap::from([("a".to_string(), 1.0)]),
+    }])
+    .expect_err("a column has no shape a map can take");
+
+    assert!(error.to_string().contains("map"), "got: {error}");
 }

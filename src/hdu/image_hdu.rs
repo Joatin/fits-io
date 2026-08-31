@@ -180,6 +180,60 @@ pub trait ImageHDU: HDU + fmt::Debug + Send + Sync {
     ) -> Result<Option<NormalisedImageStream<'_>>, Box<dyn Error + Send + Sync>>;
     /// How many bytes one image occupies.
     fn image_data_size(&self) -> u64;
+
+    /// Whether this HDU's image is stored tile-compressed inside a table.
+    fn is_compressed(&self) -> bool {
+        self.header().is_compressed_image()
+    }
+
+    /// Stores this HDU's image tile-compressed, as `fpack` would.
+    ///
+    /// The image is cut into tiles, each tile is compressed on its own, and the
+    /// result is written as a binary table whose header says what image it
+    /// stands for. Everything that reads an image here goes on working — the
+    /// HDU is still an image as far as this crate is concerned, and it is
+    /// written out as a compressed image extension.
+    ///
+    /// Compressing an already compressed HDU decompresses it first, so that
+    /// changing the settings does not compress the tiles twice.
+    ///
+    /// ```no_run
+    /// # #[cfg(feature = "fs")]
+    /// # fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    /// use fits_io::Fits;
+    /// use fits_io::fs::FsFits;
+    /// use fits_io::hdu::ImageHDU;
+    /// use fits_io::image::compression::{Compression, CompressionOptions};
+    ///
+    /// let mut fits = FsFits::open("observation.fits".as_ref())?;
+    ///
+    /// fits.primary_hdu_mut()
+    ///     .compress(&CompressionOptions::new(Compression::Rice))?;
+    ///
+    /// let smaller = fits.to_vec()?;
+    /// # Ok(())
+    /// # }
+    /// # fn main() {}
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the image cannot be compressed the way the options
+    /// ask — Rice coding a floating point image without quantising it, say —
+    /// and when its data cannot be read.
+    fn compress(
+        &mut self,
+        options: &crate::image::compression::CompressionOptions,
+    ) -> Result<(), Box<dyn Error + Send + Sync>>;
+
+    /// Stores this HDU's image plainly again, undoing [`ImageHDU::compress`].
+    ///
+    /// An HDU that was not compressed is left alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the compressed data cannot be read.
+    fn decompress(&mut self) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
 
 /// Lays a set of equally sized planes out as one array and stores it.

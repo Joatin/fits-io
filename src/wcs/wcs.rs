@@ -1,16 +1,26 @@
 use crate::header::Header;
 use crate::wcs::Projection;
+use crate::wcs::distortion::{Distortion, number};
+use crate::wcs::projection::ProjectionParams;
+use crate::wcs::spherical::Rotation;
 use std::error::Error;
 
-/// The world coordinate system of a two-axis image.
+/// The world coordinate system of an image.
 ///
-/// Built from a header's CRPIXn, CRVALn, CDELTn, CROTA2 and CTYPEn cards, this
-/// converts between pixel positions and the sky coordinates they fall on.
+/// Built from a header's CRPIXn, CRVALn, CDELTn, CDi_j, CROTAn and CTYPEn cards,
+/// this converts between pixel positions and the sky coordinates they fall on.
+/// The first two axes carry the projection, and [`Wcs::pixel_to_world`] works on
+/// those; a cube's remaining axes are read one at a time through
+/// [`Wcs::pixel_to_world_axis`].
 ///
 /// Pixel coordinates follow the FITS convention: the centre of the first pixel
 /// is `(1.0, 1.0)`, not `(0.0, 0.0)`. Use [`Wcs::pixel_to_world_indexed`] and
 /// [`Wcs::world_to_pixel_indexed`] to work in zero-based array indices instead.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// A pixel the projection cannot place on the sky — a corner of an all-sky
+/// image falls outside the sky itself — comes back as `NaN` rather than as a
+/// plausible coordinate somewhere else.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Wcs {
     reference_pixel: (f64, f64),
     reference_value: (f64, f64),
@@ -19,16 +29,35 @@ pub struct Wcs {
     /// Its inverse, worked out once so that `world_to_pixel` need not.
     inverse: [[f64; 2]; 2],
     projection: Projection,
+    /// How the projection's own sphere sits against the celestial one. A linear
+    /// system has no sphere and no rotation.
+    rotation: Option<Rotation>,
+    params: ProjectionParams,
+    distortion: Distortion,
+    /// Every axis the header describes, including the two the projection uses.
+    axes: Vec<Axis>,
+}
+
+/// One axis of the coordinate system, as its own CRPIXn, CRVALn and CDELTn
+/// describe it.
+#[derive(Debug, Clone, PartialEq)]
+struct Axis {
+    reference_pixel: f64,
+    reference_value: f64,
+    delta: f64,
+    ctype: Option<String>,
+    cunit: Option<String>,
 }
 
 impl Wcs {
-    /// Reads the WCS of the first two axes out of `header`.
+    /// Reads the world coordinate system out of `header`.
     ///
     /// # Errors
     ///
     /// Returns an error when the header carries no usable WCS — CRPIXn and
-    /// CRVALn are both required — or when it names a projection this crate does
-    /// not implement.
+    /// CRVALn are both required — when it names a projection this crate does not
+    /// implement, or when its celestial axes are given in units other than
+    /// degrees.
     pub fn from_header(header: &Header) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let axis = |name: &str, value: Option<f64>, index: usize| {
             value.ok_or_else(|| {
@@ -62,9 +91,29 @@ impl Wcs {
         })?;
 
         // Both axes must agree on the projection; the first one names it.
-        let projection = match header.coordinate_axis_name(0) {
-            Some(ctype) => Projection::from_ctype(ctype)?,
+        let ctype = header.coordinate_axis_name(0).map(str::to_string);
+        let projection = match ctype.as_deref() {
+            Some(ctype) => Projection::from_ctype(projection_code(ctype))?,
             None => Projection::Linear,
+        };
+
+        let rotation = if projection == Projection::Linear {
+            None
+        } else {
+            for index in 0..2 {
+                degrees(header, index)?;
+            }
+
+            Some(Rotation::new(
+                reference_value,
+                projection.fiducial(),
+                number(header, "LONPOLE").or_else(|| number(header, "PV1_3")),
+                number(header, "LATPOLE").or_else(|| number(header, "PV1_4")),
+            )?)
+        };
+
+        let params = ProjectionParams {
+            cea_lambda: number(header, "PV2_1"),
         };
 
         Ok(Self {
@@ -73,6 +122,10 @@ impl Wcs {
             transform,
             inverse,
             projection,
+            rotation,
+            params,
+            distortion: Distortion::from_header(header, ctype.as_deref()),
+            axes: axes_of(header),
         })
     }
 
@@ -91,30 +144,124 @@ impl Wcs {
         self.projection
     }
 
+    /// Whether the first two axes describe a position on the sky, as opposed to
+    /// a plain linear pair.
+    pub fn is_celestial(&self) -> bool {
+        self.rotation.is_some()
+    }
+
+    /// The celestial coordinates of the projection's own pole, in degrees, for a
+    /// system that has one.
+    ///
+    /// For the zenithal projections — TAN among them — this is the reference
+    /// point itself. For the whole-sky projections it is a quarter turn away
+    /// from it, which is what an all-sky map is drawn about.
+    pub fn celestial_pole(&self) -> Option<(f64, f64)> {
+        self.rotation.as_ref().map(Rotation::pole)
+    }
+
+    /// How many axes the header describes.
+    pub fn axis_count(&self) -> usize {
+        self.axes.len()
+    }
+
+    /// The CTYPEn of an axis, counting from zero.
+    pub fn axis_type(&self, axis: usize) -> Option<&str> {
+        self.axes.get(axis)?.ctype.as_deref()
+    }
+
+    /// The CUNITn of an axis, counting from zero — the unit its world
+    /// coordinates are in.
+    pub fn axis_unit(&self, axis: usize) -> Option<&str> {
+        self.axes.get(axis)?.cunit.as_deref()
+    }
+
+    /// The world coordinate at a pixel along one axis, counting from zero.
+    ///
+    /// This is how a cube's third axis is read: the wavelength, frequency or
+    /// time a plane was taken at. `pixel` is one-based, as FITS counts pixels.
+    ///
+    /// A `-LOG` axis is read as the standard defines it, with the coordinate
+    /// growing geometrically rather than by a fixed step. The two celestial
+    /// axes have no coordinate of their own — they only mean anything together —
+    /// so they come back `None`; [`Wcs::pixel_to_world`] is what reads those.
+    pub fn pixel_to_world_axis(&self, axis: usize, pixel: f64) -> Option<f64> {
+        if self.is_celestial() && axis < 2 {
+            return None;
+        }
+
+        let described = self.axes.get(axis)?;
+        let offset = described.delta * (pixel - described.reference_pixel);
+
+        Some(if self.is_logarithmic(axis) {
+            described.reference_value * (offset / described.reference_value).exp()
+        } else {
+            described.reference_value + offset
+        })
+    }
+
+    /// The pixel a world coordinate falls on along one axis, the inverse of
+    /// [`Wcs::pixel_to_world_axis`].
+    pub fn world_to_pixel_axis(&self, axis: usize, world: f64) -> Option<f64> {
+        if self.is_celestial() && axis < 2 {
+            return None;
+        }
+
+        let described = self.axes.get(axis)?;
+
+        if described.delta == 0.0 {
+            return None;
+        }
+
+        let offset = if self.is_logarithmic(axis) {
+            described.reference_value * (world / described.reference_value).ln()
+        } else {
+            world - described.reference_value
+        };
+
+        Some(described.reference_pixel + offset / described.delta)
+    }
+
+    /// Whether an axis grows geometrically, as its CTYPEn `-LOG` code says.
+    fn is_logarithmic(&self, axis: usize) -> bool {
+        self.axes
+            .get(axis)
+            .and_then(|axis| axis.ctype.as_deref())
+            .is_some_and(|ctype| ctype.trim().ends_with("-LOG"))
+    }
+
     /// The sky coordinate at a pixel, in degrees.
     ///
     /// `pixel` is one-based, as FITS counts pixels.
     pub fn pixel_to_world(&self, pixel: (f64, f64)) -> (f64, f64) {
         let intermediate = self.pixel_to_intermediate(pixel);
 
-        match self.projection {
-            Projection::Linear => (
+        let Some(rotation) = &self.rotation else {
+            return (
                 self.reference_value.0 + intermediate.0,
                 self.reference_value.1 + intermediate.1,
-            ),
-            Projection::Gnomonic => self.gnomonic_to_world(intermediate),
-        }
+            );
+        };
+
+        let (phi, theta) = self
+            .projection
+            .to_native(intermediate.0, intermediate.1, &self.params);
+
+        rotation.to_celestial(phi, theta)
     }
 
     /// The pixel a sky coordinate falls on, in degrees in and one-based pixels
     /// out.
     pub fn world_to_pixel(&self, world: (f64, f64)) -> (f64, f64) {
-        let intermediate = match self.projection {
-            Projection::Linear => (
+        let intermediate = match &self.rotation {
+            None => (
                 world.0 - self.reference_value.0,
                 world.1 - self.reference_value.1,
             ),
-            Projection::Gnomonic => self.world_to_gnomonic(world),
+            Some(rotation) => {
+                let (phi, theta) = rotation.to_native(world.0, world.1);
+                self.projection.from_native(phi, theta, &self.params)
+            }
         };
 
         self.intermediate_to_pixel(intermediate)
@@ -155,67 +302,82 @@ impl Wcs {
             pixel.1 - self.reference_pixel.1,
         );
 
-        apply(self.transform, offset)
+        // SIP corrects the pixel offsets, TPV the coordinates the matrix
+        // produces, so each sits on its own side of it.
+        let corrected = self.distortion.correct_pixel(offset);
+
+        self.distortion
+            .correct_intermediate(apply(self.transform, corrected))
     }
 
     /// The inverse of [`Wcs::pixel_to_intermediate`].
     fn intermediate_to_pixel(&self, intermediate: (f64, f64)) -> (f64, f64) {
-        let offset = apply(self.inverse, intermediate);
+        let undistorted = self.distortion.uncorrect_intermediate(intermediate);
+        let offset = self
+            .distortion
+            .uncorrect_pixel(apply(self.inverse, undistorted));
 
         (
             self.reference_pixel.0 + offset.0,
             self.reference_pixel.1 + offset.1,
         )
     }
+}
 
-    /// The gnomonic (TAN) deprojection, from plane offsets in degrees to a sky
-    /// coordinate in degrees.
-    fn gnomonic_to_world(&self, intermediate: (f64, f64)) -> (f64, f64) {
-        let xi = intermediate.0.to_radians();
-        let eta = intermediate.1.to_radians();
+/// The part of a CTYPEn that names the projection, with any distortion code
+/// taken off the end.
+///
+/// `RA---TAN-SIP` is the gnomonic projection with a polynomial correction, not a
+/// projection called SIP.
+fn projection_code(ctype: &str) -> &str {
+    ctype.trim().strip_suffix("-SIP").unwrap_or(ctype.trim())
+}
 
-        let (reference_longitude, reference_latitude) = (
-            self.reference_value.0.to_radians(),
-            self.reference_value.1.to_radians(),
-        );
-        let (sin_latitude, cos_latitude) = reference_latitude.sin_cos();
+/// Checks that a celestial axis is given in degrees.
+///
+/// CDELTn and CRVALn mean nothing without their unit, and every formula here is
+/// in degrees. A header measuring its axis in arcseconds and being read as
+/// degrees is wrong by a factor of 3600.
+fn degrees(header: &Header, index: usize) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let Some(unit) = string(header, &format!("CUNIT{}", index + 1)) else {
+        // No CUNITn at all means degrees, which is what the standard says.
+        return Ok(());
+    };
 
-        let denominator = cos_latitude - eta * sin_latitude;
-
-        let longitude = reference_longitude + xi.atan2(denominator);
-        let latitude = ((sin_latitude + eta * cos_latitude)
-            / (xi * xi + denominator * denominator).sqrt())
-        .atan();
-
-        (
-            normalise_longitude(longitude.to_degrees()),
-            latitude.to_degrees(),
+    match unit.trim() {
+        "deg" | "degree" | "degrees" | "" => Ok(()),
+        other => Err(format!(
+            "The celestial axis CUNIT{} is {:?}, and this crate reads celestial coordinates in \
+             degrees",
+            index + 1,
+            other
         )
+        .into()),
     }
+}
 
-    /// The gnomonic (TAN) projection, the inverse of [`Wcs::gnomonic_to_world`].
-    fn world_to_gnomonic(&self, world: (f64, f64)) -> (f64, f64) {
-        let (longitude, latitude) = (world.0.to_radians(), world.1.to_radians());
-        let (reference_longitude, reference_latitude) = (
-            self.reference_value.0.to_radians(),
-            self.reference_value.1.to_radians(),
-        );
-
-        let delta = longitude - reference_longitude;
-        let (sin_latitude, cos_latitude) = latitude.sin_cos();
-        let (sin_reference, cos_reference) = reference_latitude.sin_cos();
-
-        // The cosine of the angle between the point and the reference. A point
-        // on the far hemisphere has no gnomonic image at all, which shows up
-        // here as a zero or negative denominator.
-        let denominator = sin_latitude * sin_reference + cos_latitude * cos_reference * delta.cos();
-
-        let xi = cos_latitude * delta.sin() / denominator;
-        let eta = (sin_latitude * cos_reference - cos_latitude * sin_reference * delta.cos())
-            / denominator;
-
-        (xi.to_degrees(), eta.to_degrees())
+/// The text a card holds, for the keywords with no typed accessor of their own.
+fn string(header: &Header, key: &str) -> Option<String> {
+    match header.card(key)? {
+        crate::header::Value::String { value, .. } => Some(value),
+        _ => None,
     }
+}
+
+/// Reads every axis the header describes, in order.
+fn axes_of(header: &Header) -> Vec<Axis> {
+    let count = header.naxis().unwrap_or(0).max(0) as usize;
+
+    (0..count)
+        .map(|index| Axis {
+            reference_pixel: header.coordinate_reference_pixel(index).unwrap_or(0.0),
+            reference_value: header.coordinate_value_at_pixel(index).unwrap_or(0.0),
+            // A missing CDELTn is one unit per pixel, as the standard says.
+            delta: header.coordinate_delta(index).unwrap_or(1.0),
+            ctype: header.coordinate_axis_name(index).map(str::to_string),
+            cunit: string(header, &format!("CUNIT{}", index + 1)),
+        })
+        .collect()
 }
 
 /// Reads the transformation matrix out of whichever convention the header uses.
@@ -255,9 +417,7 @@ fn transform_from(header: &Header) -> [[f64; 2]; 2] {
 
     if (0..2).any(|row| (0..2).any(|column| rotation(row, column).is_some())) {
         // A PCi_j the header leaves out is the identity matrix's value there.
-        let identity = |row: usize, column: usize| {
-            if row == column { 1.0 } else { 0.0 }
-        };
+        let identity = |row: usize, column: usize| if row == column { 1.0 } else { 0.0 };
         let element = |row, column| rotation(row, column).unwrap_or_else(|| identity(row, column));
 
         return [
@@ -305,39 +465,37 @@ fn invert(matrix: [[f64; 2]; 2]) -> Option<[[f64; 2]; 2]> {
     ])
 }
 
-/// Wraps a longitude into `0.0..360.0`.
-fn normalise_longitude(degrees: f64) -> f64 {
-    let wrapped = degrees % 360.0;
-    if wrapped < 0.0 {
-        wrapped + 360.0
-    } else {
-        wrapped
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Wcs, invert, normalise_longitude};
-    use crate::wcs::Projection;
+    use super::{Wcs, invert};
+    use crate::header::Header;
+    use crate::wcs::spherical::normalise_longitude;
 
-    /// A system with the given projection and rotation, built the way a CROTAn
-    /// header would express it.
-    fn wcs(projection: Projection, rotation: f64) -> Wcs {
-        let scale = (-0.001, 0.001);
-        let (sin, cos) = f64::to_radians(rotation).sin_cos();
+    /// A header describing a two-axis image under `projection`, rotated by
+    /// `rotation` degrees, the way a CDELTn and CROTAn header would say it.
+    fn header(projection: &str, rotation: f64) -> Header {
+        let mut header = Header::default();
 
-        let transform = [
-            [scale.0 * cos, -scale.1 * sin],
-            [scale.0 * sin, scale.1 * cos],
-        ];
+        header.set_card("NAXIS", 2_i64).unwrap();
+        header.set_card("CRPIX1", 100.5).unwrap();
+        header.set_card("CRPIX2", 200.5).unwrap();
+        header.set_card("CRVAL1", 150.0).unwrap();
+        header.set_card("CRVAL2", 40.0).unwrap();
+        header.set_card("CDELT1", -0.001).unwrap();
+        header.set_card("CDELT2", 0.001).unwrap();
+        header.set_card("CROTA2", rotation).unwrap();
+        header
+            .set_card("CTYPE1", format!("RA---{projection}"))
+            .unwrap();
+        header
+            .set_card("CTYPE2", format!("DEC--{projection}"))
+            .unwrap();
 
-        Wcs {
-            reference_pixel: (100.5, 200.5),
-            reference_value: (150.0, 40.0),
-            transform,
-            inverse: super::invert(transform).expect("a rotation is invertible"),
-            projection,
-        }
+        header
+    }
+
+    fn wcs(projection: &str, rotation: f64) -> Wcs {
+        Wcs::from_header(&header(projection, rotation)).expect("a complete WCS header")
     }
 
     fn assert_close(actual: (f64, f64), expected: (f64, f64)) {
@@ -349,7 +507,7 @@ mod tests {
 
     #[test]
     fn the_reference_pixel_sits_at_the_reference_value() {
-        for projection in [Projection::Linear, Projection::Gnomonic] {
+        for projection in ["TAN", "SIN", "ARC", "STG", "ZEA", "CAR", "AIT", "MOL"] {
             let wcs = wcs(projection, 0.0);
             assert_close(wcs.pixel_to_world((100.5, 200.5)), (150.0, 40.0));
         }
@@ -357,13 +515,27 @@ mod tests {
 
     #[test]
     fn pixel_and_world_round_trip() {
-        for projection in [Projection::Linear, Projection::Gnomonic] {
+        for projection in [
+            "TAN", "SIN", "ARC", "STG", "ZEA", "CAR", "MER", "AIT", "MOL",
+        ] {
             for rotation in [0.0, 30.0, -12.5] {
                 let wcs = wcs(projection, rotation);
 
                 for pixel in [(1.0, 1.0), (100.5, 200.5), (512.0, 480.0)] {
                     let world = wcs.pixel_to_world(pixel);
-                    assert_close(wcs.world_to_pixel(world), pixel);
+                    assert!(
+                        world.0.is_finite(),
+                        "{projection} put pixel {pixel:?} nowhere"
+                    );
+
+                    // A millionth of a pixel: the projections that are solved
+                    // by iteration rather than in closed form give up a few
+                    // digits, and this is far below what any of it means.
+                    let back = wcs.world_to_pixel(world);
+                    assert!(
+                        (back.0 - pixel.0).abs() < 1e-6 && (back.1 - pixel.1).abs() < 1e-6,
+                        "{projection} took {pixel:?} to {world:?} and back to {back:?}"
+                    );
                 }
             }
         }
@@ -371,18 +543,29 @@ mod tests {
 
     #[test]
     fn a_linear_axis_is_a_plain_offset_from_the_reference() {
-        let wcs = wcs(Projection::Linear, 0.0);
+        let mut header = header("TAN", 0.0);
+        header.set_card("CTYPE1", "LINEAR").unwrap();
+        header.set_card("CTYPE2", "LINEAR").unwrap();
+
+        let wcs = Wcs::from_header(&header).unwrap();
 
         // Ten pixels along the first axis, at -0.001 degrees per pixel.
         assert_close(wcs.pixel_to_world((110.5, 200.5)), (149.99, 40.0));
+        assert!(!wcs.is_celestial());
     }
 
     #[test]
     fn a_gnomonic_axis_is_not_a_plain_offset() {
         // The whole point of a projection is that it is not linear: away from
         // the reference point, right ascension converges with latitude.
-        let linear = wcs(Projection::Linear, 0.0).pixel_to_world((1100.5, 200.5));
-        let gnomonic = wcs(Projection::Gnomonic, 0.0).pixel_to_world((1100.5, 200.5));
+        let mut linear = header("TAN", 0.0);
+        linear.set_card("CTYPE1", "LINEAR").unwrap();
+        linear.set_card("CTYPE2", "LINEAR").unwrap();
+
+        let linear = Wcs::from_header(&linear)
+            .unwrap()
+            .pixel_to_world((1100.5, 200.5));
+        let gnomonic = wcs("TAN", 0.0).pixel_to_world((1100.5, 200.5));
 
         assert!(
             (linear.0 - gnomonic.0).abs() > 1e-6,
@@ -391,8 +574,84 @@ mod tests {
     }
 
     #[test]
+    fn north_is_up_and_east_is_left_in_an_unrotated_image() {
+        let wcs = wcs("TAN", 0.0);
+
+        // A pixel above the reference is north of it, and one to the right is
+        // west — which is what the negative CDELT1 of a sky image means.
+        let north = wcs.pixel_to_world((100.5, 300.5));
+        let right = wcs.pixel_to_world((200.5, 200.5));
+
+        assert!(
+            north.1 > 40.0,
+            "north of the reference should be, got {north:?}"
+        );
+        assert!(
+            (north.0 - 150.0).abs() < 1e-9,
+            "straight north keeps its right ascension, got {north:?}"
+        );
+        assert!(
+            right.0 < 150.0,
+            "the right of the frame is west, got {right:?}"
+        );
+    }
+
+    #[test]
+    fn the_projections_agree_close_to_the_reference_point() {
+        // Every projection is locally the same to first order, so a pixel a few
+        // arcseconds out lands in the same place whichever one is used. A
+        // projection with its formulae the wrong way round shows up here.
+        let reference = wcs("TAN", 0.0).pixel_to_world((110.5, 210.5));
+
+        for projection in ["SIN", "ARC", "STG", "ZEA"] {
+            let other = wcs(projection, 0.0).pixel_to_world((110.5, 210.5));
+
+            assert!(
+                (other.0 - reference.0).abs() < 1e-6 && (other.1 - reference.1).abs() < 1e-6,
+                "{projection} put the pixel at {other:?}, TAN at {reference:?}"
+            );
+        }
+    }
+
+    /// The closed-form gnomonic deprojection, written out independently of
+    /// everything the crate does, so that the general machinery has something
+    /// to be checked against.
+    fn gnomonic_by_hand(reference: (f64, f64), xi: f64, eta: f64) -> (f64, f64) {
+        let (xi, eta) = (xi.to_radians(), eta.to_radians());
+        let (longitude, latitude) = (reference.0.to_radians(), reference.1.to_radians());
+        let (sin, cos) = latitude.sin_cos();
+
+        let denominator = cos - eta * sin;
+
+        (
+            normalise_longitude((longitude + xi.atan2(denominator)).to_degrees()),
+            ((sin + eta * cos) / (xi * xi + denominator * denominator).sqrt())
+                .atan()
+                .to_degrees(),
+        )
+    }
+
+    #[test]
+    fn the_gnomonic_projection_agrees_with_its_closed_form() {
+        let wcs = wcs("TAN", 0.0);
+
+        for pixel in [(1.0, 1.0), (250.0, 60.0), (900.5, 1000.5)] {
+            // The intermediate coordinates the matrix produces, by hand.
+            let (u, v) = (pixel.0 - 100.5, pixel.1 - 200.5);
+            let expected = gnomonic_by_hand((150.0, 40.0), -0.001 * u, 0.001 * v);
+
+            let actual = wcs.pixel_to_world(pixel);
+
+            assert!(
+                (actual.0 - expected.0).abs() < 1e-10 && (actual.1 - expected.1).abs() < 1e-10,
+                "at {pixel:?} the closed form gives {expected:?} and the projection {actual:?}"
+            );
+        }
+    }
+
+    #[test]
     fn indexed_helpers_shift_between_pixel_conventions() {
-        let wcs = wcs(Projection::Gnomonic, 0.0);
+        let wcs = wcs("TAN", 0.0);
 
         // Array index (0, 0) is FITS pixel (1.0, 1.0).
         assert_close(
@@ -406,10 +665,125 @@ mod tests {
 
     #[test]
     fn a_coordinate_outside_the_image_has_no_pixel() {
-        let wcs = wcs(Projection::Gnomonic, 0.0);
+        let wcs = wcs("TAN", 0.0);
 
         let world = wcs.pixel_to_world_indexed((400, 400));
         assert_eq!(wcs.world_to_pixel_indexed(world, 100, 100), None);
+    }
+
+    #[test]
+    fn a_cubes_third_axis_reads_on_its_own() {
+        let mut header = header("TAN", 0.0);
+        header.set_card("NAXIS", 3_i64).unwrap();
+        header.set_card("CTYPE3", "WAVE").unwrap();
+        header.set_card("CUNIT3", "Angstrom").unwrap();
+        header.set_card("CRPIX3", 1.0).unwrap();
+        header.set_card("CRVAL3", 4000.0).unwrap();
+        header.set_card("CDELT3", 1.25).unwrap();
+
+        let wcs = Wcs::from_header(&header).unwrap();
+
+        assert_eq!(wcs.axis_count(), 3);
+        assert_eq!(wcs.axis_type(2), Some("WAVE"));
+        assert_eq!(wcs.axis_unit(2), Some("Angstrom"));
+        assert_eq!(wcs.pixel_to_world_axis(2, 1.0), Some(4000.0));
+        assert_eq!(wcs.pixel_to_world_axis(2, 5.0), Some(4005.0));
+        assert_eq!(wcs.world_to_pixel_axis(2, 4005.0), Some(5.0));
+
+        // The celestial axes only mean anything together.
+        assert_eq!(wcs.pixel_to_world_axis(0, 1.0), None);
+        assert_eq!(wcs.pixel_to_world_axis(9, 1.0), None);
+    }
+
+    #[test]
+    fn a_logarithmic_axis_grows_geometrically() {
+        let mut header = header("TAN", 0.0);
+        header.set_card("NAXIS", 3_i64).unwrap();
+        header.set_card("CTYPE3", "FREQ-LOG").unwrap();
+        header.set_card("CRPIX3", 1.0).unwrap();
+        header.set_card("CRVAL3", 1000.0).unwrap();
+        header.set_card("CDELT3", 10.0).unwrap();
+
+        let wcs = Wcs::from_header(&header).unwrap();
+
+        let at_reference = wcs.pixel_to_world_axis(2, 1.0).unwrap();
+        let further = wcs.pixel_to_world_axis(2, 11.0).unwrap();
+
+        assert!((at_reference - 1000.0).abs() < 1e-9);
+        assert!((further - 1000.0 * (100.0_f64 / 1000.0).exp()).abs() < 1e-6);
+        assert!((wcs.world_to_pixel_axis(2, further).unwrap() - 11.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_celestial_axis_in_the_wrong_unit_is_refused() {
+        let mut header = header("TAN", 0.0);
+        header.set_card("CUNIT1", "arcsec").unwrap();
+
+        let error = Wcs::from_header(&header).expect_err("arcseconds are not degrees");
+        assert!(error.to_string().contains("arcsec"), "got: {error}");
+    }
+
+    #[test]
+    fn a_sip_header_bends_the_field_and_bends_it_back() {
+        let mut header = header("TAN", 0.0);
+        header.set_card("CTYPE1", "RA---TAN-SIP").unwrap();
+        header.set_card("CTYPE2", "DEC--TAN-SIP").unwrap();
+        header.set_card("A_ORDER", 2_i64).unwrap();
+        header.set_card("A_2_0", 1e-5).unwrap();
+        header.set_card("B_ORDER", 2_i64).unwrap();
+        header.set_card("B_0_2", -2e-5).unwrap();
+
+        let distorted = Wcs::from_header(&header).unwrap();
+        let ideal = wcs("TAN", 0.0);
+
+        let pixel = (600.5, 700.5);
+
+        let with = distorted.pixel_to_world(pixel);
+        let without = ideal.pixel_to_world(pixel);
+
+        assert!(
+            (with.0 - without.0).abs() > 1e-6 || (with.1 - without.1).abs() > 1e-6,
+            "the correction should move the corner of the frame, got {with:?} and {without:?}"
+        );
+
+        let back = distorted.world_to_pixel(with);
+        assert!(
+            (back.0 - pixel.0).abs() < 1e-6 && (back.1 - pixel.1).abs() < 1e-6,
+            "{pixel:?} came back as {back:?}"
+        );
+    }
+
+    #[test]
+    fn a_tpv_header_bends_the_field_and_bends_it_back() {
+        let mut header = header("TAN", 0.0);
+        header.set_card("CTYPE1", "RA---TPV").unwrap();
+        header.set_card("CTYPE2", "DEC--TPV").unwrap();
+        header.set_card("PV1_1", 1.0).unwrap();
+        header.set_card("PV1_4", 0.002).unwrap();
+        header.set_card("PV2_1", 1.0).unwrap();
+
+        let wcs = Wcs::from_header(&header).unwrap();
+        let pixel = (600.5, 700.5);
+
+        let world = wcs.pixel_to_world(pixel);
+        let back = wcs.world_to_pixel(world);
+
+        assert!(
+            (back.0 - pixel.0).abs() < 1e-6 && (back.1 - pixel.1).abs() < 1e-6,
+            "{pixel:?} came back as {back:?}"
+        );
+    }
+
+    #[test]
+    fn an_all_sky_projection_puts_its_pole_a_quarter_turn_from_its_centre() {
+        let mut header = header("AIT", 0.0);
+        header.set_card("CRVAL1", 0.0).unwrap();
+        header.set_card("CRVAL2", 0.0).unwrap();
+
+        let wcs = Wcs::from_header(&header).unwrap();
+
+        let pole = wcs.celestial_pole().expect("a celestial system has a pole");
+        assert!((pole.1 - 90.0).abs() < 1e-9, "got {pole:?}");
     }
 
     #[test]

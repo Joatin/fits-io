@@ -16,9 +16,9 @@ portability and safety matter.
 * 🧩 Support for Primary HDUs and extensions
 * 🖼️ Image HDUs of any dimensionality, cubes and hypercubes included
 * 📊 Binary and ASCII tables alike, with optional `serde` support in both directions
-* 🗜️ Tile-compressed images, read as images like any other
-* 🌍 World coordinate helpers: pixels to sky positions and back
-* 🧠 Typed access to FITS header keywords
+* 🗜️ Tile-compressed images, read *and written* as images like any other
+* 🌍 World coordinate helpers: pixels to sky positions and back, with SIP and TPV distortions
+* 🧠 Typed access to FITS header keywords, and any keyword at all by name
 * 🚀 Streaming and memory-efficient reads
 * 🛡️ Idiomatic error handling with Result
 * 🔁 CFITSIO-inspired API, redesigned for Rust
@@ -28,7 +28,7 @@ portability and safety matter.
 Add the crate to your Cargo.toml:
 ```toml
 [dependencies]
-fits-io = "0.1"
+fits-io = "0.2"
 ```
 
 ## Reading a file
@@ -111,6 +111,63 @@ fits.primary_hdu_mut()
 // `to_vec` returns the bytes; `save` writes them back over the file.
 let bytes = fits.to_vec()?;
 fits.save()?;
+# Ok(())
+# }
+# fn main() {}
+```
+
+### Editing the header
+
+Every keyword this crate knows has an accessor of its own, and any keyword at
+all can be set by name. A keyword too long for the eight columns a card gives it
+becomes a `HIERARCH` card, and a value too long for one card is written across
+`CONTINUE` cards.
+
+```rust
+# fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+use fits_io::header::{Header, Value};
+
+let mut header = Header::default();
+
+header.set_card("OBJECT", "NGC 7000")?;
+header.set_card("EXPTIME", Value::from(300.0).with_comment("seconds"))?;
+header.set_card("ESO INS FILT1 NAME", "Halpha")?;
+header.add_history("stacked from 42 subframes");
+
+// The typed accessors see what was set by name.
+assert_eq!(header.object(), Some("NGC 7000"));
+# Ok(())
+# }
+```
+
+### Compressing an image
+
+An image can be stored tile-compressed, the way `fpack` writes one: cut into
+tiles, each tile compressed on its own, and the result written as a binary table
+that a reader treats as the image it stands for. Everything that reads an image
+goes on working.
+
+```rust
+# #[cfg(feature = "gzip")]
+# fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+use fits_io::hdu::ImageHDU;
+use fits_io::image::compression::{Compression, CompressionOptions, Quantize};
+use fits_io::{Fits, FitsSlice};
+
+let mut fits = FitsSlice::new();
+fits.primary_hdu_mut()
+    .set_raw_images_i16(2, 2, &[&[1, 2, 3, 4]])?;
+
+fits.primary_hdu_mut()
+    .compress(&CompressionOptions::new(Compression::Rice))?;
+
+let bytes = fits.to_vec()?;
+
+// A floating point image has to be quantised before an integer coder can take
+// it, which loses the low bits of every pixel; `Compression::Gzip` compresses
+// one as it stands and loses nothing.
+let lossy = CompressionOptions::new(Compression::Rice)
+    .with_quantization(Quantize::NoiseLevel(4.0));
 # Ok(())
 # }
 # fn main() {}
@@ -199,6 +256,10 @@ support.
 and decoding its rows, against the Gaia fixture under `tests/`. It reports the
 fastest of several runs and skips when the fixture is absent.
 
+## Changelog
+
+What has changed between releases is in [CHANGELOG.md](CHANGELOG.md).
+
 ## Documentation
 
 Every public item is documented, and `#![deny(missing_docs)]` keeps it that way.
@@ -230,17 +291,24 @@ enabled so the `serde`, `tokio` and `gzip` parts are visible.
 | Undefined image pixels        | ✅      | BLANK reads as NaN rather than as black                  |
 | Header read                   | ✅      | `CONTINUE` long values and `HIERARCH` keywords included  |
 | Header write                  | ✅      | Mandatory cards filled in and ordered as the standard asks |
+| Header editing                | ✅      | `set_card` and `remove_card` by keyword, writing `HIERARCH` and `CONTINUE` as needed |
 | Image write                   | ✅      | Any number of axes, then `save` or `to_vec`              |
 | Table write                   | ✅      | `set_table` / `set_rows`, for both table kinds           |
 | Building files                 | ✅      | `push_extension` and `remove_extension`                  |
 | Gzip decompression            | ✅      | `.fits.gz` files and gzipped buffers alike               |
 | Streaming image reads         | ✅      | `stream_normalised_image`, via the `tokio` feature       |
 | Streaming table rows          | ✅      | `stream_table_rows`, via the `tokio` feature             |
-| WCS helpers                   | ✅      | `CDi_j`, `PCi_j` and `CDELTn`/`CROTAn`; linear and `TAN` |
+| WCS conventions               | ✅      | `CDi_j`, `PCi_j` and `CDELTn`/`CROTAn`, with `LONPOLE` and `LATPOLE` |
+| WCS projections               | ✅      | `TAN`, `SIN`, `ARC`, `STG`, `ZEA`, `CAR`, `MER`, `CEA`, `AIT`, `MOL` |
+| WCS distortions               | ✅      | `SIP` and `TPV`, both applied and inverted               |
+| Non-celestial axes            | ✅      | A cube's third axis and beyond, linear or `-LOG`         |
 | CHECKSUM and DATASUM          | ✅      | Written on save; `checksum::verify` checks an HDU        |
 | Random groups                 | ✅      | `group_count` and `read_group`, with PSCALn and PZEROn   |
-| Compressed image extensions   | ✅      | `RICE_1`, `HCOMPRESS_1`, `PLIO_1`, `GZIP_1/2`, `NOCOMPRESS` |
-| HCOMPRESS smoothing           | 🚧     | A tile asking to be smoothed reports that, not a different image |
+| Compressed image read         | ✅      | `RICE_1`, `HCOMPRESS_1`, `PLIO_1`, `GZIP_1/2`, `NOCOMPRESS`, any number of axes |
+| Compressed image write        | ✅      | `RICE_1`, `HCOMPRESS_1`, `PLIO_1`, `GZIP_1/2` and `NOCOMPRESS`, through `ImageHDU::compress` |
+| Quantised floating point      | ✅      | `ZQUANTIZ` dithering read and written, `ZBLANK` included |
+| HCOMPRESS smoothing           | ✅      | `SMOOTH` honoured, matching the reference implementation |
+| Conic WCS projections         | 🚧     | `COE`, `COD` and the rest say so rather than guessing    |
 
 ## License
 

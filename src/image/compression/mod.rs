@@ -4,9 +4,14 @@
 //! each one, and stores the results as the rows of a binary table. The table's
 //! header describes the image it stands for with keywords beginning `Z`.
 
+pub(crate) mod dither;
 pub(crate) mod hcompress;
 pub(crate) mod plio;
 pub(crate) mod rice;
+mod write;
+
+pub use self::dither::Quantization;
+pub use self::write::{Compression, CompressionOptions, Quantize};
 
 use crate::bin_table::{BinTable, Value};
 use crate::header::{Bitpix, Header};
@@ -24,62 +29,206 @@ const GZIP_COMPRESSED_DATA: &str = "GZIP_COMPRESSED_DATA";
 const SCALE: &str = "ZSCALE";
 const ZERO: &str = "ZZERO";
 
+/// The column carrying a tile's own blank value, where the tiles do not share
+/// one.
+const BLANK: &str = "ZBLANK";
+
+/// Compresses an image into the table that will stand for it.
+///
+/// `header` and `data` are the image's own; what comes back is the header and
+/// data section of the binary table extension carrying it compressed.
+pub(crate) fn compress_image(
+    header: &Header,
+    data: &[u8],
+    options: &CompressionOptions,
+) -> Result<(Header, Vec<u8>), Box<dyn Error + Send + Sync>> {
+    write::compress(header, data, options)
+}
+
+/// Unpacks a compressed image back into an ordinary one.
+///
+/// The header that comes back is the image's own, with the table's keywords
+/// gone, and the data is its pixels laid out as an image HDU holds them.
+pub(crate) fn decompress_image(
+    header: &Header,
+    data: &[u8],
+) -> Result<(Header, Vec<u8>), Box<dyn Error + Send + Sync>> {
+    let table = BinTable::from_u8(header, data.to_vec())?;
+    let (data, image_header) = read_data(header, &table)?;
+
+    Ok((image_header, data))
+}
+
 /// Decompresses the image a table stands for.
 pub(crate) fn read_image(
     header: &Header,
     table: &BinTable,
 ) -> Result<Image, Box<dyn Error + Send + Sync>> {
+    let (data, image_header) = read_data(header, table)?;
+
+    Image::from_data_and_header(data, &image_header)
+}
+
+/// Decompresses the image a table stands for, as the bytes and header an
+/// ordinary image HDU would hold.
+pub(crate) fn read_data(
+    header: &Header,
+    table: &BinTable,
+) -> Result<(Vec<u8>, Header), Box<dyn Error + Send + Sync>> {
     let bitpix = header
         .compressed_bitpix()
         .ok_or("A compressed image needs a ZBITPIX card to say what its values are")?;
 
-    if header.compressed_naxis() != Some(2) {
-        return Err(format!(
-            "Only two-dimensional compressed images are supported, but ZNAXIS is {:?}",
-            header.compressed_naxis()
-        )
-        .into());
-    }
+    let shape = shape_of(header)?;
+    let tile = tile_shape(header, &shape);
 
-    let width = size(header.compressed_naxis_n(0), "ZNAXIS1")?;
-    let height = size(header.compressed_naxis_n(1), "ZNAXIS2")?;
-    let tile_width = size(Some(header.compressed_tile_size(0)), "ZTILE1")?.max(1);
-    let tile_height = size(Some(header.compressed_tile_size(1)), "ZTILE2")?.max(1);
+    // How many tiles the image is cut into along each axis, and how many pixels
+    // it holds altogether.
+    let tiles: Vec<usize> = shape
+        .iter()
+        .zip(&tile)
+        .map(|(length, tile)| length.div_ceil(*tile))
+        .collect();
 
-    let across = width.div_ceil(tile_width);
+    let count = shape.iter().try_fold(1_usize, |total, length| {
+        total.checked_mul(*length).ok_or_else(|| {
+            format!(
+                "A compressed image of {:?} holds more pixels than can be counted",
+                shape
+            )
+        })
+    })?;
 
     // The image is assembled in the type it will be read back as, so that the
     // ordinary image path can take it from here.
-    let mut pixels = vec![0_f64; width * height];
+    let mut pixels = vec![0_f64; count];
+
+    let quantization = Quantization::from_card(header.quantization_method())?;
+    let seed = header.dither_seed().unwrap_or(1);
+
+    // Where each axis starts and how far a tile reaches along it, reused for
+    // every tile rather than rebuilt.
+    let mut origin = vec![0_usize; shape.len()];
+    let mut extent = vec![0_usize; shape.len()];
 
     for (index, row) in table.rows().enumerate() {
-        let tile_x = (index % across) * tile_width;
-        let tile_y = (index / across) * tile_height;
+        // The tiles are stored in the order the axes are in, the first axis
+        // running fastest, so the row number decomposes into the tile's place
+        // along each of them.
+        let mut rest = index;
+        for (axis, count) in tiles.iter().enumerate() {
+            origin[axis] = (rest % count) * tile[axis];
+            rest /= count;
+        }
 
-        if tile_y >= height {
+        // A table with more rows than the image has tiles describes more image
+        // than the header does, and the header is what says how big it is.
+        if rest > 0 {
             break;
         }
 
-        // Tiles at the right and bottom edges are cut short by the image's size.
-        let this_width = tile_width.min(width - tile_x);
-        let this_height = tile_height.min(height - tile_y);
-        let count = this_width * this_height;
-
-        let values = decode_tile(header, &row, count, bitpix)?;
-
-        for (offset, value) in values.iter().enumerate().take(count) {
-            let x = tile_x + offset % this_width;
-            let y = tile_y + offset / this_width;
-
-            pixels[y * width + x] = *value;
+        // Tiles at the far edge of each axis are cut short by the image's size.
+        for axis in 0..shape.len() {
+            extent[axis] = tile[axis].min(shape[axis] - origin[axis]);
         }
+
+        let holds = extent.iter().product::<usize>();
+        let values = decode_tile(header, &row, holds, bitpix, quantization, seed, index)?;
+
+        scatter(&mut pixels, &shape, &origin, &extent, &values);
     }
 
     // The header of the image this stands for, so that BZERO, BSCALE, DATAMIN
     // and the rest are read exactly as they would be for an ordinary image.
     let image_header = header.uncompressed();
 
-    Image::from_data_and_header(to_be_bytes(&pixels, bitpix), &image_header)
+    Ok((to_be_bytes(&pixels, bitpix), image_header))
+}
+
+/// The shape of the image a compressed table stands for, fastest axis first.
+fn shape_of(header: &Header) -> Result<Vec<usize>, Box<dyn Error + Send + Sync>> {
+    let axes = header
+        .compressed_naxis()
+        .ok_or("A compressed image needs a ZNAXIS card to say how many axes it has")?;
+
+    if axes < 1 {
+        return Err(format!("A compressed image cannot have {} axes", axes).into());
+    }
+
+    (0..axes as usize)
+        .map(|axis| {
+            size(
+                header.compressed_naxis_n(axis),
+                &format!("ZNAXIS{}", axis + 1),
+            )
+        })
+        .collect()
+}
+
+/// How far a tile reaches along each axis.
+///
+/// The convention's default is a tile one row wide, which is what a header that
+/// leaves the ZTILEn cards out means.
+fn tile_shape(header: &Header, shape: &[usize]) -> Vec<usize> {
+    (0..shape.len())
+        .map(|axis| {
+            let size = header.compressed_tile_size(axis);
+
+            usize::try_from(size)
+                .unwrap_or(1)
+                .max(1)
+                .min(shape[axis].max(1))
+        })
+        .collect()
+}
+
+/// Copies one tile's values into the image at `origin`.
+///
+/// A tile is laid out with its own first axis running fastest, the same way the
+/// image is, so each run of `extent[0]` values is contiguous in both and the
+/// copy walks the tile one such run at a time.
+fn scatter(
+    pixels: &mut [f64],
+    shape: &[usize],
+    origin: &[usize],
+    extent: &[usize],
+    values: &[f64],
+) {
+    let run = extent[0];
+    if run == 0 {
+        return;
+    }
+
+    let runs = extent.iter().skip(1).product::<usize>();
+    let mut within = vec![0_usize; shape.len()];
+
+    for index in 0..runs {
+        // Where this run sits along every axis but the first.
+        let mut rest = index;
+        for axis in 1..shape.len() {
+            within[axis] = rest % extent[axis];
+            rest /= extent[axis];
+        }
+
+        // The image is indexed with the first axis running fastest, so each
+        // further axis steps by the product of the ones before it.
+        let mut at = origin[0];
+        let mut stride = shape[0];
+        for axis in 1..shape.len() {
+            at += (origin[axis] + within[axis]) * stride;
+            stride *= shape[axis];
+        }
+
+        let from = index * run;
+        let Some(source) = values.get(from..from + run) else {
+            return;
+        };
+        let Some(target) = pixels.get_mut(at..at + run) else {
+            return;
+        };
+
+        target.copy_from_slice(source);
+    }
 }
 
 fn size(value: Option<i64>, key: &str) -> Result<usize, Box<dyn Error + Send + Sync>> {
@@ -95,7 +244,21 @@ fn decode_tile(
     row: &crate::bin_table::Row,
     count: usize,
     bitpix: Bitpix,
+    quantization: Quantization,
+    seed: i64,
+    tile: usize,
 ) -> Result<Vec<f64>, Box<dyn Error + Send + Sync>> {
+    // A floating point image is compressed by quantising it to integers, which
+    // these two columns scale back. Their presence is also what says the tile
+    // holds integers rather than the floats ZBITPIX names.
+    let scale = number_of(row, SCALE);
+    let zero = number_of(row, ZERO);
+    let quantised = scale.is_some() || zero.is_some();
+
+    // The width the tile is actually stored in: a quantised float tile holds
+    // 32-bit integers however wide ZBITPIX says its values are.
+    let stored = if quantised { Bitpix::I32 } else { bitpix };
+
     let compressed = bytes_of(row, COMPRESSED_DATA).unwrap_or_default();
 
     // PLIO's instructions arrive as words rather than bytes, so an empty byte
@@ -109,34 +272,36 @@ fn decode_tile(
             .ok()
             .filter(|b| !b.is_empty())
         {
-            from_be_bytes(&plain, bitpix, count)
+            from_be_bytes(&plain, stored, count)
         } else {
             let gzipped = bytes_of(row, GZIP_COMPRESSED_DATA)?;
             if gzipped.is_empty() {
                 return Err("A compressed image tile holds no data at all".into());
             }
-            from_be_bytes(&gunzip(&gzipped)?, bitpix, count)
+            from_be_bytes(&gunzip(&gzipped)?, stored, count)
         }
     } else {
-        decompress(header, row, &compressed, count, bitpix)?
+        decompress(header, row, &compressed, count, stored)?
     };
 
-    // A floating point image is compressed by quantising it to integers, which
-    // these two columns scale back.
-    let scale = number_of(row, SCALE);
-    let zero = number_of(row, ZERO);
+    // A tile may name its own blank value, and otherwise the file's ZBLANK
+    // stands for every tile.
+    let blank = number_of(row, BLANK).or_else(|| header.compressed_blank().map(|v| v as f64));
 
-    if scale.is_none() && zero.is_none() {
+    if !quantised {
+        // An integer image says which value is undefined with BLANK, which the
+        // ordinary image reader applies; a float one has NaN already.
         return Ok(values);
     }
 
-    let scale = scale.unwrap_or(1.0);
-    let zero = zero.unwrap_or(0.0);
-
-    Ok(values
-        .into_iter()
-        .map(|value| zero + scale * value)
-        .collect())
+    Ok(dither::unquantize(
+        &values,
+        scale.unwrap_or(1.0),
+        zero.unwrap_or(0.0),
+        quantization,
+        blank,
+        dither::Dither::for_tile(seed, tile),
+    ))
 }
 
 /// Runs a tile's bytes through whichever algorithm ZCMPTYPE names.

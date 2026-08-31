@@ -17,3 +17,4 @@ pub use self::header::Header;
 pub use self::image_type::ImageType;
 pub use self::table_column_format::{ArrayDescriptor, TableColumnFormat, TableElementFormat};
 pub use self::table_null_value::TableNullValue;
+pub use self::value::Value;

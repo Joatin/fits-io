@@ -5,7 +5,9 @@
 //! CDELTn the scale, CROTA2 the rotation, and CTYPEn which projection carries
 //! the plane onto the sphere.
 
+mod distortion;
 mod projection;
+mod spherical;
 #[allow(clippy::module_inception)]
 mod wcs;
 

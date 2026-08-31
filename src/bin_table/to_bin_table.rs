@@ -8,6 +8,13 @@ use std::fmt::{Display, Formatter};
 #[derive(Debug, Clone)]
 pub enum Error {
     NotSupported(&'static str),
+    /// A value that no single column can hold, with what to do instead.
+    NoColumnFor {
+        /// What arrived.
+        kind: &'static str,
+        /// What would work.
+        hint: &'static str,
+    },
     /// The input is not shaped like a table: a table is a sequence of rows, and
     /// a row is a struct whose fields are its columns.
     NotATable,
@@ -24,6 +31,9 @@ impl Display for Error {
         match self {
             Error::NotSupported(kind) => {
                 write!(f, "Binary tables do not support {} values", kind)
+            }
+            Error::NoColumnFor { kind, hint } => {
+                write!(f, "A binary table column cannot hold {}. {}", kind, hint)
             }
             Error::NotATable => write!(
                 f,
@@ -87,10 +97,67 @@ pub(crate) fn collect_rows<T: Serialize>(data: &T) -> Result<Vec<Row>> {
     let mut table = TableSerializer {
         rows: Vec::new(),
         current: Vec::new(),
+        key: None,
     };
     data.serialize(&mut table)?;
 
-    Ok(table.rows)
+    reorder(table.rows)
+}
+
+/// Puts every row's columns in the order the first row has them.
+///
+/// A row given as a map — which is what `#[serde(flatten)]` produces, and what a
+/// `HashMap` row is — has no fixed order to its keys, and two rows of the same
+/// table can hand their columns over in different orders. The columns are the
+/// same columns either way, so they are lined up here rather than reported as
+/// rows that disagree.
+fn reorder(mut rows: Vec<Row>) -> Result<Vec<Row>> {
+    let Some(first) = rows.first() else {
+        return Ok(rows);
+    };
+
+    let names: Vec<String> = first.iter().map(|(name, _)| name.clone()).collect();
+
+    for row in rows.iter_mut().skip(1) {
+        // Already in order, which is every row of a table of structs.
+        if row.iter().map(|(name, _)| name).eq(names.iter()) {
+            continue;
+        }
+
+        let mut ordered = Vec::with_capacity(names.len());
+        for name in &names {
+            let found = row.iter().position(|(key, _)| key == name).ok_or_else(|| {
+                Error::InconsistentColumns {
+                    expected: names.join(", "),
+                    found: row
+                        .iter()
+                        .map(|(key, _)| key.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                }
+            })?;
+
+            ordered.push(row.remove(found));
+        }
+
+        // Anything left over is a column the first row did not have, which
+        // would be dropped silently if it were allowed through.
+        if !row.is_empty() {
+            return Err(Error::InconsistentColumns {
+                expected: names.join(", "),
+                found: ordered
+                    .iter()
+                    .chain(row.iter())
+                    .map(|(key, _)| key.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            });
+        }
+
+        *row = ordered;
+    }
+
+    Ok(rows)
 }
 
 /// Checks that every row has the same columns, and returns their names.
@@ -484,6 +551,9 @@ struct TableSerializer {
     rows: Vec<Row>,
     /// The row currently being collected, moved into `rows` when its struct ends.
     current: Row,
+    /// The name of the column a map row is part way through, held between the
+    /// key and the value serde hands over separately.
+    key: Option<String>,
 }
 
 impl ser::Serializer for &mut TableSerializer {
@@ -494,7 +564,7 @@ impl ser::Serializer for &mut TableSerializer {
     type SerializeTuple = Self;
     type SerializeTupleStruct = Impossible<(), Error>;
     type SerializeTupleVariant = Impossible<(), Error>;
-    type SerializeMap = Impossible<(), Error>;
+    type SerializeMap = Self;
     type SerializeStruct = Self;
     type SerializeStructVariant = Impossible<(), Error>;
 
@@ -613,8 +683,13 @@ impl ser::Serializer for &mut TableSerializer {
     ) -> Result<Self::SerializeTupleVariant> {
         Err(Error::NotSupported("enum"))
     }
+    /// A row given as a map: each entry is a column, named by its key.
+    ///
+    /// This is what a `HashMap` row serialises as, and — less obviously — what
+    /// a struct with `#[serde(flatten)]` on one of its fields does, which is how
+    /// a row made of nested structs is written.
     fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap> {
-        Err(Error::NotSupported("map"))
+        Ok(self)
     }
     fn serialize_struct_variant(
         self,
@@ -624,6 +699,181 @@ impl ser::Serializer for &mut TableSerializer {
         _len: usize,
     ) -> Result<Self::SerializeStructVariant> {
         Err(Error::NotSupported("enum"))
+    }
+}
+
+impl ser::SerializeMap for &mut TableSerializer {
+    type Ok = ();
+    type Error = Error;
+
+    fn serialize_key<T>(&mut self, key: &T) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        self.key = Some(key.serialize(KeySerializer)?);
+        Ok(())
+    }
+
+    fn serialize_value<T>(&mut self, value: &T) -> Result<()>
+    where
+        T: ?Sized + Serialize,
+    {
+        let key = self
+            .key
+            .take()
+            .ok_or_else(|| Error::Custom("A column arrived without a name".into()))?;
+
+        self.current.push((key, value.serialize(ValueSerializer)?));
+
+        Ok(())
+    }
+
+    fn end(self) -> Result<()> {
+        let row = std::mem::take(&mut self.current);
+        self.rows.push(row);
+        Ok(())
+    }
+}
+
+/// Turns a map key into the name of the column it stands for.
+///
+/// A column is named by a TTYPEn card, which holds text, so a key that is not
+/// text — or something that reads as text — cannot name one.
+struct KeySerializer;
+
+impl ser::Serializer for KeySerializer {
+    type Ok = String;
+    type Error = Error;
+
+    type SerializeSeq = Impossible<String, Error>;
+    type SerializeTuple = Impossible<String, Error>;
+    type SerializeTupleStruct = Impossible<String, Error>;
+    type SerializeTupleVariant = Impossible<String, Error>;
+    type SerializeMap = Impossible<String, Error>;
+    type SerializeStruct = Impossible<String, Error>;
+    type SerializeStructVariant = Impossible<String, Error>;
+
+    fn serialize_str(self, value: &str) -> Result<String> {
+        Ok(value.to_string())
+    }
+    fn serialize_char(self, value: char) -> Result<String> {
+        Ok(value.to_string())
+    }
+    fn serialize_bool(self, value: bool) -> Result<String> {
+        Ok(value.to_string())
+    }
+    fn serialize_i8(self, value: i8) -> Result<String> {
+        Ok(value.to_string())
+    }
+    fn serialize_i16(self, value: i16) -> Result<String> {
+        Ok(value.to_string())
+    }
+    fn serialize_i32(self, value: i32) -> Result<String> {
+        Ok(value.to_string())
+    }
+    fn serialize_i64(self, value: i64) -> Result<String> {
+        Ok(value.to_string())
+    }
+    fn serialize_u8(self, value: u8) -> Result<String> {
+        Ok(value.to_string())
+    }
+    fn serialize_u16(self, value: u16) -> Result<String> {
+        Ok(value.to_string())
+    }
+    fn serialize_u32(self, value: u32) -> Result<String> {
+        Ok(value.to_string())
+    }
+    fn serialize_u64(self, value: u64) -> Result<String> {
+        Ok(value.to_string())
+    }
+    fn serialize_f32(self, value: f32) -> Result<String> {
+        Ok(value.to_string())
+    }
+    fn serialize_f64(self, value: f64) -> Result<String> {
+        Ok(value.to_string())
+    }
+    /// A unit enum variant names itself, which is how an enum keyed map works.
+    fn serialize_unit_variant(
+        self,
+        _name: &'static str,
+        _index: u32,
+        variant: &'static str,
+    ) -> Result<String> {
+        Ok(variant.to_string())
+    }
+    fn serialize_newtype_struct<T>(self, _name: &'static str, value: &T) -> Result<String>
+    where
+        T: ?Sized + Serialize,
+    {
+        value.serialize(self)
+    }
+    fn serialize_some<T>(self, value: &T) -> Result<String>
+    where
+        T: ?Sized + Serialize,
+    {
+        value.serialize(self)
+    }
+
+    fn serialize_bytes(self, _value: &[u8]) -> Result<String> {
+        Err(Error::NotSupported("a column name that is not text"))
+    }
+    fn serialize_none(self) -> Result<String> {
+        Err(Error::NotSupported("a column with no name"))
+    }
+    fn serialize_unit(self) -> Result<String> {
+        Err(Error::NotSupported("a column with no name"))
+    }
+    fn serialize_unit_struct(self, _name: &'static str) -> Result<String> {
+        Err(Error::NotSupported("a column with no name"))
+    }
+    fn serialize_newtype_variant<T>(
+        self,
+        _name: &'static str,
+        _index: u32,
+        _variant: &'static str,
+        _value: &T,
+    ) -> Result<String>
+    where
+        T: ?Sized + Serialize,
+    {
+        Err(Error::NotSupported("a column name that is not text"))
+    }
+    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq> {
+        Err(Error::NotSupported("a column name that is not text"))
+    }
+    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple> {
+        Err(Error::NotSupported("a column name that is not text"))
+    }
+    fn serialize_tuple_struct(
+        self,
+        _name: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleStruct> {
+        Err(Error::NotSupported("a column name that is not text"))
+    }
+    fn serialize_tuple_variant(
+        self,
+        _name: &'static str,
+        _index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleVariant> {
+        Err(Error::NotSupported("a column name that is not text"))
+    }
+    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap> {
+        Err(Error::NotSupported("a column name that is not text"))
+    }
+    fn serialize_struct(self, _name: &'static str, _len: usize) -> Result<Self::SerializeStruct> {
+        Err(Error::NotSupported("a column name that is not text"))
+    }
+    fn serialize_struct_variant(
+        self,
+        _name: &'static str,
+        _index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeStructVariant> {
+        Err(Error::NotSupported("a column name that is not text"))
     }
 }
 
@@ -780,7 +1030,12 @@ impl ser::Serializer for ValueSerializer {
     where
         T: ?Sized + Serialize,
     {
-        Err(Error::NotSupported("enum"))
+        Err(Error::NoColumnFor {
+            kind: "an enum variant carrying a value",
+            hint: "A column holds one value, and an externally tagged variant is two — the name \
+                   and the value. A unit-only enum becomes a text column; `#[serde(untagged)]` \
+                   writes the value alone.",
+        })
     }
 
     fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq> {
@@ -805,13 +1060,25 @@ impl ser::Serializer for ValueSerializer {
         _variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeTupleVariant> {
-        Err(Error::NotSupported("enum"))
+        Err(Error::NoColumnFor {
+            kind: "an enum variant carrying values",
+            hint: "A unit-only enum becomes a text column; `#[serde(untagged)]` writes the \
+                   values alone.",
+        })
     }
     fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap> {
-        Err(Error::NotSupported("map"))
+        Err(Error::NoColumnFor {
+            kind: "a map",
+            hint: "A map at the top level of a row becomes the row's columns; one inside a \
+                   column has no shape a column can take.",
+        })
     }
     fn serialize_struct(self, _name: &'static str, _len: usize) -> Result<Self::SerializeStruct> {
-        Err(Error::NotSupported("nested struct"))
+        Err(Error::NoColumnFor {
+            kind: "a struct",
+            hint: "Put `#[serde(flatten)]` on the field to spread its own fields across columns \
+                   of their own.",
+        })
     }
     fn serialize_struct_variant(
         self,
